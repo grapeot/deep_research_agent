@@ -36,6 +36,7 @@ venv
 *.log
 .env
 *.png
+!examples/nvda_trend.png
 *.jpg
 *.jpeg
 *.gif
