@@ -32,6 +32,9 @@ venv
 *.swp
 *.swo
 
+# macOS
+.DS_Store
+
 # Project specific
 *.log
 .env
