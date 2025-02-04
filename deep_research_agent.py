@@ -127,6 +127,9 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
     # Add initial prompt to conversation
     conversation.append({"role": "user", "content": prompt})
     
+    # Counter for non-tool responses
+    non_tool_responses = 0
+    
     while True:
         try:
             # Get assistant's response
@@ -134,7 +137,8 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                 model=model,
                 messages=conversation,
                 functions=function_definitions,
-                function_call="auto"
+                function_call="auto",
+                reasoning_effort='high'
             )
             assistant_message = response.choices[0].message
             
@@ -171,10 +175,29 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                 })
             else:
                 # If it's a final response (no more tool calls needed)
-                print("\nFinal Answer:")
+                print("\nAssistant's Response:")
                 print(assistant_message.content)
                 conversation.append({"role": "assistant", "content": assistant_message.content})
-                break
+                
+                non_tool_responses += 1
+                if non_tool_responses == 1:
+                    # Prepare reflection prompt
+                    reflection_prompt = "Do you think you have fully addressed the user's request? Please carefully consider if there are any missing aspects. If the task is not completely resolved, please continue using the tools to complete it."
+                    
+                    # Add scratchpad content if it exists
+                    try:
+                        if os.path.exists('scratchpad.md'):
+                            with open('scratchpad.md', 'r', encoding='utf-8') as f:
+                                scratchpad_content = f.read()
+                                reflection_prompt += f"\n\nHere is the current scratchpad content for your reference in determining task completion:\n\n{scratchpad_content}"
+                    except Exception as e:
+                        logger.warning(f"Failed to read scratchpad.md: {e}")
+                    
+                    conversation.append({"role": "user", "content": reflection_prompt})
+                    print("\nAsking assistant to reflect on task completion...")
+                elif non_tool_responses == 2:
+                    # End the conversation after second non-tool response
+                    break
                 
         except Exception as e:
             print(f"\nError: {str(e)}")
