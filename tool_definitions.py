@@ -63,48 +63,21 @@ function_definitions = [
         }
     },
     {
-        "name": "execute_python",
-        "description": "Execute a Python script and return its stdout. The script should already exist, e.g. it was created by the create_file tool.",
+        "name": "execute_command",
+        "description": "Execute a terminal command and return its output.",
         "parameters": {
             "type": "object",
             "properties": {
-                "filename": {
+                "command": {
                     "type": "string",
-                    "description": "Name of the Python file to execute"
-                }
-            },
-            "required": ["filename"]
-        }
-    },
-    {
-        "name": "install_python_package",
-        "description": "Install Python packages using pip. Can specify version requirements.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "packages": {
-                    "oneOf": [
-                        {
-                            "type": "string",
-                            "description": "Single package name with optional version specifier (e.g. 'pandas>=2.0.0')"
-                        },
-                        {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            },
-                            "description": "List of package names with optional version specifiers"
-                        }
-                    ],
-                    "description": "Package(s) to install"
+                    "description": "The terminal command to execute"
                 },
-                "upgrade": {
-                    "type": "boolean",
-                    "description": "Whether to upgrade the package if it's already installed",
-                    "default": False
+                "explanation": {
+                    "type": "string",
+                    "description": "Explanation of what the command does"
                 }
             },
-            "required": ["packages"]
+            "required": ["command", "explanation"]
         }
     }
 ] 
