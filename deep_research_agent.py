@@ -57,7 +57,6 @@ def calculate_cost(prompt_tokens: int, completion_tokens: int, model: str) -> fl
         "o1": {"input": 15.0, "output": 60.0},
     }
     
-    # Default to gpt-3.5-turbo pricing if model not found
     pricing = MODEL_PRICING.get(model, MODEL_PRICING["o3-mini"])
     
     # Convert to millions and calculate
@@ -188,6 +187,7 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                 messages=conversation,
                 functions=function_definitions,
                 function_call="auto",
+                reasoning_effort='high'
             )
             
             # Calculate thinking time
@@ -255,7 +255,16 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                 conversation.append({"role": "assistant", "content": assistant_message.content})
                 
                 non_tool_responses += 1
-                if non_tool_responses >= 1:
+                if non_tool_responses == 3:
+                    # Print final token usage statistics
+                    print("\nFinal Token Usage Statistics:")
+                    print(f"Total input tokens: {total_prompt_tokens}")
+                    print(f"Total output tokens: {total_completion_tokens}")
+                    print(f"Total tokens: {total_prompt_tokens + total_completion_tokens}")
+                    print(f"Total cost: ${total_cost:.6f}")
+                    # End the conversation after second non-tool response
+                    break
+                elif non_tool_responses == 1:
                     # Prepare reflection prompt
                     reflection_prompt = "Do you think you have fully addressed the user's request? Please carefully consider if there are any missing aspects, e.g. are the facts backed by evidences? If the task is not completely resolved, please continue using the tools to complete it."
                     
@@ -266,21 +275,12 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                                 scratchpad_content = f.read()
                                 reflection_prompt += f"\n\nHere is the current scratchpad content for your reference in determining task completion:\n\n{scratchpad_content}"
                                 reflection_prompt += "\n\nHere is the user's request:\n\n" + query
-                                reflection_prompt += "\n\nPlease first update the scratchpad to reflect the progress of the task. Then think about how to further improve the report."
+                                reflection_prompt += "\n\nPlease first update the scratchpad to reflect the progress of the task. Then think about how to further improve the report, and execute the plan to improve the report."
                     except Exception as e:
                         logger.warning(f"Failed to read scratchpad.md: {e}")
                     
                     conversation.append({"role": "user", "content": reflection_prompt})
                     print("\nAsking assistant to reflect on task completion...")
-                elif non_tool_responses == 3:
-                    # Print final token usage statistics
-                    print("\nFinal Token Usage Statistics:")
-                    print(f"Total input tokens: {total_prompt_tokens}")
-                    print(f"Total output tokens: {total_completion_tokens}")
-                    print(f"Total tokens: {total_prompt_tokens + total_completion_tokens}")
-                    print(f"Total cost: ${total_cost:.6f}")
-                    # End the conversation after second non-tool response
-                    break
                 
         except Exception as e:
             print(f"\nError: {str(e)}")
