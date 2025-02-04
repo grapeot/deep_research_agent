@@ -258,8 +258,11 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                 print("\nWould you like to add any comments or provide additional input? (Press Enter to skip)")
                 user_input = input("> ").strip()
                 if user_input:
+                    print("\nReceived your input. Sending request to assistant...")
                     conversation.append({"role": "user", "content": user_input})
                     continue
+                else:
+                    print("\nNo additional input received. Continuing with the conversation...")
                 
                 non_tool_responses += 1
                 if non_tool_responses == 2:
