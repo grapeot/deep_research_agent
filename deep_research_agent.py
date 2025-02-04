@@ -65,74 +65,36 @@ def handle_function_call(message: openai.types.chat.ChatCompletionMessage) -> Op
         func_name = function_call.name
         arguments = json.loads(function_call.arguments)
         
-        # Special handling for package installation
-        if func_name == "install_python_package":
-            packages = arguments.get("packages", [])
-            if isinstance(packages, str):
-                packages = [packages]
-            upgrade = arguments.get("upgrade", False)
+        # Handle terminal command execution
+        if func_name == "execute_command":
+            command = arguments.get("command")
+            explanation = arguments.get("explanation")
             
-            # Construct pip command
-            pip_cmd = "venv/bin/pip" if os.path.exists("venv/bin/pip") else "pip"
-            cmd_parts = [pip_cmd, "install"]
-            if upgrade:
-                cmd_parts.append("--upgrade")
-            cmd_parts.extend(packages)
+            if not command:
+                return "Error: No command provided"
             
             # Ask for user confirmation
-            cmd_str = " ".join(cmd_parts)
-            print(f"\nConfirm execution of command: {cmd_str}")
-            print(f"Explanation: Installing Python packages: {', '.join(packages)}")
+            print(f"\nConfirm execution of command: {command}")
+            print(f"Explanation: {explanation}")
             confirmation = input("[y/N]: ").strip().lower()
             
             if confirmation != 'y':
-                return "Package installation cancelled by user."
+                return "Command execution cancelled by user."
             
-            # Execute pip command
+            # Execute command
             try:
                 result = subprocess.run(
-                    cmd_parts,
+                    command,
+                    shell=True,
                     capture_output=True,
                     text=True,
                     check=True
                 )
-                return result.stdout
+                return f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             except subprocess.CalledProcessError as e:
-                return f"Error installing packages: stdout={e.stdout}, stderr={e.stderr}"
+                return f"Error executing command: stdout={e.stdout}, stderr={e.stderr}"
             except Exception as e:
-                return f"Error installing packages: {str(e)}"
-        
-        # Special handling for Python script execution
-        elif func_name == "execute_python":
-            filename = arguments.get("filename")
-            if not filename:
-                return "Error: No filename provided"
-            
-            if not os.path.exists(filename):
-                return f"Error: File {filename} does not exist"
-            
-            # Use run_terminal_cmd to execute the Python script
-            cmd_str = f"python3 {filename}"
-            print(f"\nConfirm execution of command: {cmd_str}")
-            print(f"Explanation: Executing Python script: {filename}")
-            confirmation = input("[y/N]: ").strip().lower()
-            
-            if confirmation != 'y':
-                return "Script execution cancelled by user."
-            
-            # Execute Python script
-            try:
-                result = subprocess.run(
-                    ["python3", filename],
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
-                return result.stdout
-            except subprocess.CalledProcessError as e:
-                return f"Error executing script: stdout={e.stdout}, stderr={e.stderr}"
-            except Exception as e:
-                return f"Error executing script: {str(e)}"
+                return f"Error executing command: {str(e)}"
         
         # Handle other functions
         elif func_name == "perform_search":
