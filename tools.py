@@ -333,7 +333,7 @@ def validate_url(url: str) -> bool:
         return False
 
 # Main Tool Functions
-def perform_search(query: str, max_results: int = 5, max_retries: int = 3) -> str:
+def perform_search(query: str, max_results: int = 10, max_retries: int = 3) -> str:
     """
     Perform a web search and return formatted results.
 
