@@ -157,21 +157,13 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
         query: User's query
         system_prompt: System prompt for the assistant
     """
-    # Initialize OpenAI client
-    client = openai.OpenAI()
-    
-    # Start a conversation
+    # Initialize conversation
     conversation = []
     prompt = system_prompt + "\n\nUser's request:\n" + query
     print(f"\nTask:\n{prompt}")
     
     # Add initial prompt to conversation
     conversation.append({"role": "user", "content": prompt})
-    
-    # Initialize token tracking
-    total_prompt_tokens = 0
-    total_completion_tokens = 0
-    total_cost = 0.0
     
     # Counter for non-tool responses
     non_tool_responses = 0
@@ -181,47 +173,25 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
             # Start timer
             start_time = time.time()
             
-            # Get assistant's response
-            response = client.chat.completions.create(
+            # Get assistant's response using cached chat completion
+            response = tools.chat_completion.chat_completion(
                 model=model,
                 messages=conversation,
                 functions=function_definitions,
                 function_call="auto",
-                reasoning_effort='high'
             )
             
             # Calculate thinking time
             thinking_time = time.time() - start_time
             
-            # Track token usage
-            usage = response.usage
-            token_usage = TokenUsage(
-                prompt_tokens=usage.prompt_tokens,
-                completion_tokens=usage.completion_tokens,
-                total_tokens=usage.total_tokens,
-            )
-            
-            # Update totals
-            total_prompt_tokens += token_usage.prompt_tokens
-            total_completion_tokens += token_usage.completion_tokens
-            step_cost = calculate_cost(token_usage.prompt_tokens, token_usage.completion_tokens, model)
-            total_cost += step_cost
-            
-            # Log usage for this step
-            logger.info(f"\nStep Token Usage:")
-            logger.info(f"Input tokens: {token_usage.prompt_tokens}")
-            logger.info(f"Output tokens: {token_usage.completion_tokens}")
-            logger.info(f"Total tokens: {token_usage.total_tokens}")
-            logger.info(f"Step cost: ${step_cost:.6f}")
-            logger.info(f"Thinking time: {thinking_time:.2f}s")
-            
-            assistant_message = response.choices[0].message
+            # Get the assistant's message
+            assistant_message = response["choices"][0]["message"]
             
             # If the assistant wants to use a tool
-            if assistant_message.function_call:
+            if "function_call" in assistant_message:
                 # Parse and display the tool call details
-                func_name = assistant_message.function_call.name
-                arguments = json.loads(assistant_message.function_call.arguments)
+                func_name = assistant_message["function_call"]["name"]
+                arguments = json.loads(assistant_message["function_call"]["arguments"])
                 print(f"\nAssistant: Using tool '{func_name}' with parameters:")
                 for key, value in arguments.items():
                     print(f"  - {key}: {value}")
@@ -240,7 +210,7 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                     "content": None,
                     "function_call": {
                         "name": func_name,
-                        "arguments": assistant_message.function_call.arguments
+                        "arguments": assistant_message["function_call"]["arguments"]
                     }
                 })
                 # Include function result in the next user message
@@ -251,19 +221,25 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
             else:
                 # If it's a final response (no more tool calls needed)
                 print("\nAssistant's Response:")
-                print(assistant_message.content)
-                conversation.append({"role": "assistant", "content": assistant_message.content})
+                print(assistant_message["content"])
+                conversation.append({"role": "assistant", "content": assistant_message["content"]})
                 
                 # Give user a chance to provide additional input
                 print("\nWould you like to add any comments or provide additional input? (Press Enter to skip, 'q' to quit)")
                 user_input = input("> ").strip()
                 if user_input.lower() == 'q':
-                    # Print final token usage statistics
-                    print("\nFinal Token Usage Statistics:")
-                    print(f"Total input tokens: {total_prompt_tokens}")
-                    print(f"Total output tokens: {total_completion_tokens}")
-                    print(f"Total tokens: {total_prompt_tokens + total_completion_tokens}")
-                    print(f"Total cost: ${total_cost:.6f}")
+                    # Print token usage statistics
+                    usage = tools.chat_completion.get_token_usage()
+                    print("\nToken Usage Statistics:")
+                    print(f"Total prompt tokens (API calls): {usage['prompt_tokens']}")
+                    print(f"Total completion tokens: {usage['completion_tokens']}")
+                    print(f"Total cached prompt tokens: {usage['cached_prompt_tokens']}")
+                    print(f"Total tokens (including cached): {usage['total_tokens']}")
+                    print(f"\nCache Statistics:")
+                    print(f"Cache hits: {usage['cache_hits']}")
+                    print(f"Cache misses: {usage['cache_misses']}")
+                    print(f"\nCost Information:")
+                    print(f"Total cost: ${usage['total_cost']:.6f}")
                     break
                 elif user_input:
                     print("\nReceived your input. Sending request to assistant...")
@@ -274,13 +250,18 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                 
                 non_tool_responses += 1
                 if non_tool_responses == 2:
-                    # Print final token usage statistics
-                    print("\nFinal Token Usage Statistics:")
-                    print(f"Total input tokens: {total_prompt_tokens}")
-                    print(f"Total output tokens: {total_completion_tokens}")
-                    print(f"Total tokens: {total_prompt_tokens + total_completion_tokens}")
-                    print(f"Total cost: ${total_cost:.6f}")
-                    # End the conversation after second non-tool response
+                    # Print token usage statistics
+                    usage = tools.chat_completion.get_token_usage()
+                    print("\nToken Usage Statistics:")
+                    print(f"Total prompt tokens (API calls): {usage['prompt_tokens']}")
+                    print(f"Total completion tokens: {usage['completion_tokens']}")
+                    print(f"Total cached prompt tokens: {usage['cached_prompt_tokens']}")
+                    print(f"Total tokens (including cached): {usage['total_tokens']}")
+                    print(f"\nCache Statistics:")
+                    print(f"Cache hits: {usage['cache_hits']}")
+                    print(f"Cache misses: {usage['cache_misses']}")
+                    print(f"\nCost Information:")
+                    print(f"Total cost: ${usage['total_cost']:.6f}")
                     break
                 elif non_tool_responses == 1:
                     # Prepare reflection prompt
