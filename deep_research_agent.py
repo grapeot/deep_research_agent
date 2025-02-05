@@ -20,7 +20,7 @@ import tools
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     stream=sys.stderr
 )
@@ -91,31 +91,20 @@ def load_system_prompt(config_file: str = '.deep_research_rules') -> str:
         logger.error(f"Error loading system prompt: {e}")
         return f"""You are an AI staff helping to execute tasks using the tools at your hand. Today's date is {today}."""
 
-def handle_function_call(message: dict) -> Optional[str]:
+def handle_function_call(message: openai.types.chat.ChatCompletionMessage) -> Optional[str]:
     """
     Execute the function call from the assistant's message and return the result.
 
     Args:
-        message: Dictionary containing the assistant's message with function call
+        message: OpenAI chat completion message containing function call
 
     Returns:
         Function result string or None if no function call
     """
-    logger.debug(f"Handling function call with message: {json.dumps(message, indent=2)}")
-    
-    function_call = message.get("function_call")
-    if not function_call:
-        logger.debug("No function_call found in message")
-        return None
-        
-    logger.debug(f"Found function_call: {json.dumps(function_call, indent=2)}")
-    
-    try:
-        func_name = function_call["name"]
-        arguments = json.loads(function_call["arguments"])
-        
-        logger.debug(f"Parsed function name: {func_name}")
-        logger.debug(f"Parsed arguments: {json.dumps(arguments, indent=2)}")
+    function_call = message.function_call
+    if function_call:
+        func_name = function_call.name
+        arguments = json.loads(function_call.arguments)
         
         # Handle terminal command execution
         if func_name == "execute_command":
@@ -157,18 +146,7 @@ def handle_function_call(message: dict) -> Optional[str]:
             return tools.create_file(**arguments)
         else:
             return f"Unknown function: {func_name}"
-    except KeyError as e:
-        logger.error(f"KeyError while handling function call: {e}")
-        logger.error(f"Message structure: {json.dumps(message, indent=2)}")
-        return f"Error: Missing key in function call: {e}"
-    except json.JSONDecodeError as e:
-        logger.error(f"JSONDecodeError while parsing arguments: {e}")
-        logger.error(f"Raw arguments: {function_call.get('arguments', 'N/A')}")
-        return f"Error: Invalid JSON in arguments: {e}"
-    except Exception as e:
-        logger.error(f"Unexpected error while handling function call: {e}")
-        logger.error(f"Full message: {json.dumps(message, indent=2)}")
-        return f"Error: {str(e)}"
+    return None
 
 def chat_loop(model: str, query: str, system_prompt: str) -> None:
     """
@@ -189,12 +167,15 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
     
     # Counter for non-tool responses
     non_tool_responses = 0
+    max_retries = 3  # Maximum number of retries for empty responses
+    retry_count = 0  # Counter for retries
     
     while True:
         try:
             # Start timer
             start_time = time.time()
             
+            logger.info("Getting assistant's response...")
             # Get assistant's response using cached chat completion
             response = tools.chat_completion.chat_completion(
                 model=model,
@@ -217,12 +198,40 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
             logger.info(f"Thinking time: {thinking_time:.2f}s")
             
             assistant_message = response.choices[0].message
+            logger.info(f"Assistant message: {assistant_message}")
             
-            # If the assistant wants to use a tool
-            if assistant_message.function_call:
-                # Parse and display the tool call details
+            # Check if the message is empty and has no tool calls
+            if not assistant_message.content and not getattr(assistant_message, 'tool_calls', None) and not getattr(assistant_message, 'function_call', None):
+                logger.error("Received empty message from assistant with no tool calls")
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(f"\nReceived empty response. Retrying... (Attempt {retry_count + 1}/{max_retries})")
+                    time.sleep(1)  # Add a small delay between retries
+                    continue
+                else:
+                    print("\nError: Assistant returned empty responses after maximum retries. Please try again later.")
+                    break
+            
+            # Reset retry count on successful response
+            retry_count = 0
+            
+            # Check for tool calls (new format) or function call (old format)
+            has_tool_call = False
+            if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
+                logger.info("Found tool_calls in message")
+                tool_call = assistant_message.tool_calls[0]  # For now, handle first tool call
+                func_name = tool_call.function.name
+                arguments = json.loads(tool_call.function.arguments)
+                has_tool_call = True
+            elif hasattr(assistant_message, 'function_call') and assistant_message.function_call:
+                logger.info("Found function_call in message")
                 func_name = assistant_message.function_call.name
                 arguments = json.loads(assistant_message.function_call.arguments)
+                has_tool_call = True
+            
+            # If the assistant wants to use a tool
+            if has_tool_call:
+                # Parse and display the tool call details
                 print(f"\nAssistant: Using tool '{func_name}' with parameters:")
                 for key, value in arguments.items():
                     print(f"  - {key}: {value}")
@@ -241,7 +250,7 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                     "content": None,
                     "function_call": {
                         "name": func_name,
-                        "arguments": assistant_message.function_call.arguments
+                        "arguments": json.dumps(arguments)
                     }
                 })
                 # Include function result in the next user message
@@ -262,13 +271,10 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                     # Print token usage statistics
                     usage = tools.chat_completion.get_token_usage()
                     print("\nToken Usage Statistics:")
-                    print(f"Total prompt tokens (API calls): {usage['prompt_tokens']}")
+                    print(f"Total prompt tokens: {usage['prompt_tokens']}")
                     print(f"Total completion tokens: {usage['completion_tokens']}")
-                    print(f"Total cached prompt tokens: {usage['cached_prompt_tokens']}")
-                    print(f"Total tokens (including cached): {usage['total_tokens']}")
-                    print(f"\nCache Statistics:")
-                    print(f"Cache hits: {usage['cache_hits']}")
-                    print(f"Cache misses: {usage['cache_misses']}")
+                    print(f"Total cached tokens: {usage['cached_prompt_tokens']}")
+                    print(f"Total tokens: {usage['total_tokens']}")
                     print(f"\nCost Information:")
                     print(f"Total cost: ${usage['total_cost']:.6f}")
                     break
@@ -284,13 +290,10 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                     # Print token usage statistics
                     usage = tools.chat_completion.get_token_usage()
                     print("\nToken Usage Statistics:")
-                    print(f"Total prompt tokens (API calls): {usage['prompt_tokens']}")
+                    print(f"Total prompt tokens: {usage['prompt_tokens']}")
                     print(f"Total completion tokens: {usage['completion_tokens']}")
-                    print(f"Total cached prompt tokens: {usage['cached_prompt_tokens']}")
-                    print(f"Total tokens (including cached): {usage['total_tokens']}")
-                    print(f"\nCache Statistics:")
-                    print(f"Cache hits: {usage['cache_hits']}")
-                    print(f"Cache misses: {usage['cache_misses']}")
+                    print(f"Total cached tokens: {usage['cached_prompt_tokens']}")
+                    print(f"Total tokens: {usage['total_tokens']}")
                     print(f"\nCost Information:")
                     print(f"Total cost: ${usage['total_cost']:.6f}")
                     break
