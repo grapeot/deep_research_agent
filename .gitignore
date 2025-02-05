@@ -32,6 +32,10 @@ venv
 *.swp
 *.swo
 
+# Cursor
+.cursorrules
+commit_msg.txt
+
 # macOS
 .DS_Store
 
