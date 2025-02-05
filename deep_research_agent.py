@@ -20,7 +20,7 @@ import tools
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     stream=sys.stderr
 )
@@ -91,20 +91,31 @@ def load_system_prompt(config_file: str = '.deep_research_rules') -> str:
         logger.error(f"Error loading system prompt: {e}")
         return f"""You are an AI staff helping to execute tasks using the tools at your hand. Today's date is {today}."""
 
-def handle_function_call(message: openai.types.chat.ChatCompletionMessage) -> Optional[str]:
+def handle_function_call(message: dict) -> Optional[str]:
     """
     Execute the function call from the assistant's message and return the result.
 
     Args:
-        message: OpenAI chat completion message containing function call
+        message: Dictionary containing the assistant's message with function call
 
     Returns:
         Function result string or None if no function call
     """
-    function_call = message.function_call
-    if function_call:
-        func_name = function_call.name
-        arguments = json.loads(function_call.arguments)
+    logger.debug(f"Handling function call with message: {json.dumps(message, indent=2)}")
+    
+    function_call = message.get("function_call")
+    if not function_call:
+        logger.debug("No function_call found in message")
+        return None
+        
+    logger.debug(f"Found function_call: {json.dumps(function_call, indent=2)}")
+    
+    try:
+        func_name = function_call["name"]
+        arguments = json.loads(function_call["arguments"])
+        
+        logger.debug(f"Parsed function name: {func_name}")
+        logger.debug(f"Parsed arguments: {json.dumps(arguments, indent=2)}")
         
         # Handle terminal command execution
         if func_name == "execute_command":
@@ -146,7 +157,18 @@ def handle_function_call(message: openai.types.chat.ChatCompletionMessage) -> Op
             return tools.create_file(**arguments)
         else:
             return f"Unknown function: {func_name}"
-    return None
+    except KeyError as e:
+        logger.error(f"KeyError while handling function call: {e}")
+        logger.error(f"Message structure: {json.dumps(message, indent=2)}")
+        return f"Error: Missing key in function call: {e}"
+    except json.JSONDecodeError as e:
+        logger.error(f"JSONDecodeError while parsing arguments: {e}")
+        logger.error(f"Raw arguments: {function_call.get('arguments', 'N/A')}")
+        return f"Error: Invalid JSON in arguments: {e}"
+    except Exception as e:
+        logger.error(f"Unexpected error while handling function call: {e}")
+        logger.error(f"Full message: {json.dumps(message, indent=2)}")
+        return f"Error: {str(e)}"
 
 def chat_loop(model: str, query: str, system_prompt: str) -> None:
     """
@@ -174,21 +196,25 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
             start_time = time.time()
             
             # Get assistant's response using cached chat completion
+            logger.debug("Making chat completion request...")
             response = tools.chat_completion.chat_completion(
                 model=model,
                 messages=conversation,
                 functions=function_definitions,
                 function_call="auto",
             )
+            logger.debug(f"Got response: {json.dumps(response, indent=2)}")
             
             # Calculate thinking time
             thinking_time = time.time() - start_time
             
             # Get the assistant's message
             assistant_message = response["choices"][0]["message"]
+            logger.debug(f"Assistant message: {json.dumps(assistant_message, indent=2)}")
             
             # If the assistant wants to use a tool
             if "function_call" in assistant_message:
+                logger.debug("Found function_call in assistant message")
                 # Parse and display the tool call details
                 func_name = assistant_message["function_call"]["name"]
                 arguments = json.loads(assistant_message["function_call"]["arguments"])
@@ -198,6 +224,8 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                 
                 # Execute the tool
                 result = handle_function_call(assistant_message)
+                logger.debug(f"Function call result: {result[:200] if result else None}...")
+                
                 print("\nTool output:")
                 if result and len(result) > 500:
                     print(f"{result[:500]}...\n[Output truncated, total length: {len(result)} chars]")
@@ -219,6 +247,7 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                     "content": f"Function {func_name} returned: {result}"
                 })
             else:
+                logger.debug("No function_call in assistant message")
                 # If it's a final response (no more tool calls needed)
                 print("\nAssistant's Response:")
                 print(assistant_message["content"])
