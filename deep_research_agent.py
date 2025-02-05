@@ -255,9 +255,17 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                 conversation.append({"role": "assistant", "content": assistant_message.content})
                 
                 # Give user a chance to provide additional input
-                print("\nWould you like to add any comments or provide additional input? (Press Enter to skip)")
+                print("\nWould you like to add any comments or provide additional input? (Press Enter to skip, 'q' to quit)")
                 user_input = input("> ").strip()
-                if user_input:
+                if user_input.lower() == 'q':
+                    # Print final token usage statistics
+                    print("\nFinal Token Usage Statistics:")
+                    print(f"Total input tokens: {total_prompt_tokens}")
+                    print(f"Total output tokens: {total_completion_tokens}")
+                    print(f"Total tokens: {total_prompt_tokens + total_completion_tokens}")
+                    print(f"Total cost: ${total_cost:.6f}")
+                    break
+                elif user_input:
                     print("\nReceived your input. Sending request to assistant...")
                     conversation.append({"role": "user", "content": user_input})
                     continue
