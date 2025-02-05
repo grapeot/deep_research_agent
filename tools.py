@@ -8,15 +8,109 @@ import logging
 import os
 import subprocess
 import time
+import hashlib
+import json
 from multiprocessing import Pool
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
 import html5lib
 from duckduckgo_search import DDGS
+import openai
 
 logger = logging.getLogger(__name__)
+
+class CachedChatCompletion:
+    """Handles chat completions with token usage tracking."""
+    
+    # Model pricing per 1M tokens
+    MODEL_PRICING = {
+        "o1": {
+            "input": 15.0,
+            "output": 60.0
+        },
+        "o3-mini": {
+            "input": 1.10,
+            "output": 4.40
+        }
+    }
+    
+    def __init__(self):
+        self.client = openai.OpenAI()
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_cached_prompt_tokens = 0
+        self.total_cost = 0.0
+    
+    def calculate_cost(self, prompt_tokens: int, completion_tokens: int, cached_tokens: int, model: str) -> float:
+        """Calculate the cost of API usage based on model pricing."""
+        pricing = self.MODEL_PRICING.get(model, self.MODEL_PRICING["o3-mini"])
+        
+        # Convert to millions and calculate
+        # For cached tokens, we get a 50% discount
+        input_cost = (prompt_tokens / 1_000_000) * pricing["input"]
+        cached_cost = (cached_tokens / 1_000_000) * (pricing["input"] * 0.5)  # 50% discount on cached tokens
+        output_cost = (completion_tokens / 1_000_000) * pricing["output"]
+        
+        return input_cost + cached_cost + output_cost
+    
+    def chat_completion(
+        self,
+        messages: List[Dict[str, str]],
+        model: str = "o3-mini",
+        temperature: float = 1.0,
+        functions: Optional[List[Dict]] = None,
+        function_call: Optional[Union[str, Dict]] = None,
+        reasoning_effort: str = 'high',
+    ) -> openai.types.chat.ChatCompletion:
+        """Get chat completion with OpenAI's built-in caching."""
+        # Prepare API call parameters
+        params = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "reasoning_effort": reasoning_effort
+        }
+        if functions:
+            params["functions"] = functions
+        if function_call:
+            params["function_call"] = function_call
+            
+        # Make API call
+        response = self.client.chat.completions.create(**params)
+        
+        # Get cached tokens from prompt_tokens_details if available
+        cached_tokens = 0
+        if hasattr(response.usage, 'prompt_tokens_details'):
+            cached_tokens = getattr(response.usage.prompt_tokens_details, 'cached_tokens', 0)
+            self.total_cached_prompt_tokens += cached_tokens
+        
+        # Update token counts and calculate cost
+        self.total_prompt_tokens += response.usage.prompt_tokens
+        self.total_completion_tokens += response.usage.completion_tokens
+        step_cost = self.calculate_cost(
+            prompt_tokens=response.usage.prompt_tokens - cached_tokens,  # Only count non-cached tokens
+            completion_tokens=response.usage.completion_tokens,
+            cached_tokens=cached_tokens,
+            model=model
+        )
+        self.total_cost += step_cost
+        
+        return response
+    
+    def get_token_usage(self) -> Dict[str, Union[int, float]]:
+        """Get current token usage statistics and cost."""
+        return {
+            "prompt_tokens": self.total_prompt_tokens,
+            "completion_tokens": self.total_completion_tokens,
+            "cached_prompt_tokens": self.total_cached_prompt_tokens,
+            "total_tokens": self.total_prompt_tokens + self.total_completion_tokens,
+            "total_cost": self.total_cost
+        }
+
+# Initialize global chat completion instance
+chat_completion = CachedChatCompletion()
 
 # Search Engine Implementation
 def search_with_retry(query: str, max_results: int = 10, max_retries: int = 3) -> List[dict]:
@@ -239,7 +333,7 @@ def validate_url(url: str) -> bool:
         return False
 
 # Main Tool Functions
-def perform_search(query: str, max_results: int = 5, max_retries: int = 3) -> str:
+def perform_search(query: str, max_results: int = 10, max_retries: int = 3) -> str:
     """
     Perform a web search and return formatted results.
 

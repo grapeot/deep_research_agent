@@ -157,9 +157,6 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
         query: User's query
         system_prompt: System prompt for the assistant
     """
-    # Initialize OpenAI client
-    client = openai.OpenAI()
-    
     # Start a conversation
     conversation = []
     prompt = system_prompt + "\n\nUser's request:\n" + query
@@ -168,21 +165,19 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
     # Add initial prompt to conversation
     conversation.append({"role": "user", "content": prompt})
     
-    # Initialize token tracking
-    total_prompt_tokens = 0
-    total_completion_tokens = 0
-    total_cost = 0.0
-    
     # Counter for non-tool responses
     non_tool_responses = 0
+    max_retries = 3  # Maximum number of retries for empty responses
+    retry_count = 0  # Counter for retries
     
     while True:
         try:
             # Start timer
             start_time = time.time()
             
-            # Get assistant's response
-            response = client.chat.completions.create(
+            logger.info("Getting assistant's response...")
+            # Get assistant's response using cached chat completion
+            response = tools.chat_completion.chat_completion(
                 model=model,
                 messages=conversation,
                 functions=function_definitions,
@@ -193,35 +188,50 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
             # Calculate thinking time
             thinking_time = time.time() - start_time
             
-            # Track token usage
-            usage = response.usage
-            token_usage = TokenUsage(
-                prompt_tokens=usage.prompt_tokens,
-                completion_tokens=usage.completion_tokens,
-                total_tokens=usage.total_tokens,
-            )
-            
-            # Update totals
-            total_prompt_tokens += token_usage.prompt_tokens
-            total_completion_tokens += token_usage.completion_tokens
-            step_cost = calculate_cost(token_usage.prompt_tokens, token_usage.completion_tokens, model)
-            total_cost += step_cost
-            
             # Log usage for this step
+            usage = tools.chat_completion.get_token_usage()
             logger.info(f"\nStep Token Usage:")
-            logger.info(f"Input tokens: {token_usage.prompt_tokens}")
-            logger.info(f"Output tokens: {token_usage.completion_tokens}")
-            logger.info(f"Total tokens: {token_usage.total_tokens}")
-            logger.info(f"Step cost: ${step_cost:.6f}")
+            logger.info(f"Input tokens: {usage['prompt_tokens']}")
+            logger.info(f"Output tokens: {usage['completion_tokens']}")
+            logger.info(f"Total tokens: {usage['total_tokens']}")
+            logger.info(f"Total cost: ${usage['total_cost']:.6f}")
             logger.info(f"Thinking time: {thinking_time:.2f}s")
             
             assistant_message = response.choices[0].message
+            logger.info(f"Assistant message: {assistant_message}")
             
-            # If the assistant wants to use a tool
-            if assistant_message.function_call:
-                # Parse and display the tool call details
+            # Check if the message is empty and has no tool calls
+            if not assistant_message.content and not getattr(assistant_message, 'tool_calls', None) and not getattr(assistant_message, 'function_call', None):
+                logger.error("Received empty message from assistant with no tool calls")
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(f"\nReceived empty response. Retrying... (Attempt {retry_count + 1}/{max_retries})")
+                    time.sleep(1)  # Add a small delay between retries
+                    continue
+                else:
+                    print("\nError: Assistant returned empty responses after maximum retries. Please try again later.")
+                    break
+            
+            # Reset retry count on successful response
+            retry_count = 0
+            
+            # Check for tool calls (new format) or function call (old format)
+            has_tool_call = False
+            if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
+                logger.info("Found tool_calls in message")
+                tool_call = assistant_message.tool_calls[0]  # For now, handle first tool call
+                func_name = tool_call.function.name
+                arguments = json.loads(tool_call.function.arguments)
+                has_tool_call = True
+            elif hasattr(assistant_message, 'function_call') and assistant_message.function_call:
+                logger.info("Found function_call in message")
                 func_name = assistant_message.function_call.name
                 arguments = json.loads(assistant_message.function_call.arguments)
+                has_tool_call = True
+            
+            # If the assistant wants to use a tool
+            if has_tool_call:
+                # Parse and display the tool call details
                 print(f"\nAssistant: Using tool '{func_name}' with parameters:")
                 for key, value in arguments.items():
                     print(f"  - {key}: {value}")
@@ -240,7 +250,7 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                     "content": None,
                     "function_call": {
                         "name": func_name,
-                        "arguments": assistant_message.function_call.arguments
+                        "arguments": json.dumps(arguments)
                     }
                 })
                 # Include function result in the next user message
@@ -258,12 +268,15 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                 print("\nWould you like to add any comments or provide additional input? (Press Enter to skip, 'q' to quit)")
                 user_input = input("> ").strip()
                 if user_input.lower() == 'q':
-                    # Print final token usage statistics
-                    print("\nFinal Token Usage Statistics:")
-                    print(f"Total input tokens: {total_prompt_tokens}")
-                    print(f"Total output tokens: {total_completion_tokens}")
-                    print(f"Total tokens: {total_prompt_tokens + total_completion_tokens}")
-                    print(f"Total cost: ${total_cost:.6f}")
+                    # Print token usage statistics
+                    usage = tools.chat_completion.get_token_usage()
+                    print("\nToken Usage Statistics:")
+                    print(f"Total prompt tokens: {usage['prompt_tokens']}")
+                    print(f"Total completion tokens: {usage['completion_tokens']}")
+                    print(f"Total cached tokens: {usage['cached_prompt_tokens']}")
+                    print(f"Total tokens: {usage['total_tokens']}")
+                    print(f"\nCost Information:")
+                    print(f"Total cost: ${usage['total_cost']:.6f}")
                     break
                 elif user_input:
                     print("\nReceived your input. Sending request to assistant...")
@@ -274,13 +287,15 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                 
                 non_tool_responses += 1
                 if non_tool_responses == 2:
-                    # Print final token usage statistics
-                    print("\nFinal Token Usage Statistics:")
-                    print(f"Total input tokens: {total_prompt_tokens}")
-                    print(f"Total output tokens: {total_completion_tokens}")
-                    print(f"Total tokens: {total_prompt_tokens + total_completion_tokens}")
-                    print(f"Total cost: ${total_cost:.6f}")
-                    # End the conversation after second non-tool response
+                    # Print token usage statistics
+                    usage = tools.chat_completion.get_token_usage()
+                    print("\nToken Usage Statistics:")
+                    print(f"Total prompt tokens: {usage['prompt_tokens']}")
+                    print(f"Total completion tokens: {usage['completion_tokens']}")
+                    print(f"Total cached tokens: {usage['cached_prompt_tokens']}")
+                    print(f"Total tokens: {usage['total_tokens']}")
+                    print(f"\nCost Information:")
+                    print(f"Total cost: ${usage['total_cost']:.6f}")
                     break
                 elif non_tool_responses == 1:
                     # Prepare reflection prompt
@@ -299,7 +314,6 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                     
                     conversation.append({"role": "user", "content": reflection_prompt})
                     print("\nAsking assistant to reflect on task completion...")
-                
         except Exception as e:
             print(f"\nError: {str(e)}")
             print("Error details:", type(e).__name__)
