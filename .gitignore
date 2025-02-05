@@ -51,6 +51,7 @@ commit_msg.txt
 scratch*.txt
 analysis_*.py
 report_*.md
+scratchpad.md
 
 # Jupyter Notebook
 .ipynb_checkpoints
