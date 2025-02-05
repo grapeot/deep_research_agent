@@ -1,0 +1,48 @@
+# Instructions
+
+During you interaction with the user, if you find anything reusable in this project (e.g. version of a library, model name), especially about a fix to a mistake you made or a correction you received, you should take note in the `Lessons` section in the `.cursorrules` file so you will not make the same mistake again. 
+
+You should also use the `.cursorrules` file as a scratchpad to organize your thoughts. Especially when you receive a new task, you should first review the content of the scratchpad, clear old different task if necessary, first explain the task, and plan the steps you need to take to complete the task. You can use todo markers to indicate the progress, e.g.
+[X] Task 1
+[ ] Task 2
+
+Also update the progress of the task in the Scratchpad when you finish a subtask.
+Especially when you finished a milestone, it will help to improve your depth of task accomplishment to use the scratchpad to reflect and plan.
+The goal is to help you maintain a big picture as well as the progress of the task. Always refer to the Scratchpad when you plan the next step.
+
+# Lessons
+
+## User Specified Lessons
+
+- You have a python venv in ./venv. Use it.
+- Include info useful for debugging in the program output.
+- Read the file before you try to edit it.
+- Due to Cursor's limit, when you use `git` and `gh` and need to submit a multiline commit message, first write the message in a file, and then use `git commit -F <filename>` or similar command to commit. And then remove the file. Include "[Cursor] " in the commit message and PR title.
+
+## Cursor learned
+
+- For search results, ensure proper handling of different character encodings (UTF-8) for international queries
+- Add debug information to stderr while keeping the main output clean in stdout for better pipeline integration
+- When using seaborn styles in matplotlib, use 'seaborn-v0_8' instead of 'seaborn' as the style name due to recent seaborn version changes
+- Use 'gpt-4o' as the model name for OpenAI's GPT-4 with vision capabilities
+
+# Scratchpad
+
+## Task: 改进 AI 对话循环的完成度检查
+
+当前问题：在 `chat_loop` 函数中，当 AI 返回非工具调用的消息时，程序就直接结束了。这可能导致任务没有完全完成就退出。
+
+需求：在第一次遇到非工具调用时，让 AI 反思是否真的完成了任务，如果没有完成则继续。只有在第二次遇到非工具调用时才结束对话。
+
+计划：
+[X] 在 `chat_loop` 函数中添加一个计数器，记录非工具调用的次数
+[X] 在第一次遇到非工具调用时，向 AI 提问"你觉得你解决了用户的需求了吗？"
+[X] 根据 AI 的回答继续对话或结束
+[X] 在第二次遇到非工具调用时结束对话
+
+状态：所有计划的任务都已完成。主要修改包括：
+1. 添加了 `non_tool_responses` 计数器来跟踪非工具调用的响应次数
+2. 在第一次非工具调用时，添加了反思提示（使用英文）
+3. 只有在第二次非工具调用时才结束对话
+4. 改进了输出提示，将 "Final Answer" 改为 "Assistant's Response" 以更准确地反映状态
+5. 在反思提示中加入了 scratchpad.md 的内容（如果文件存在）

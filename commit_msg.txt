@@ -1,0 +1,11 @@
+[Cursor] Replace aiohttp with Playwright for web scraping
+
+- Replace aiohttp with Playwright for better dynamic web content support
+- Add browser context management for parallel processing
+- Update requirements.txt to include Playwright
+- Update README.md with new features and installation instructions
+- Add wait for page load state for more reliable scraping
+- Improve error handling and logging
+
+This change enables better support for JavaScript-heavy websites and provides
+more reliable web content extraction. 
