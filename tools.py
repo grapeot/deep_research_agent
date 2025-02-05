@@ -59,10 +59,10 @@ class CachedChatCompletion:
         
         return input_cost + cached_cost + output_cost
     
-    def hash_messages(self, messages: List[Dict[str, str]]) -> str:
-        """Create a deterministic hash of the messages."""
-        messages_str = json.dumps(messages, sort_keys=True)
-        return hashlib.sha256(messages_str.encode()).hexdigest()
+    def hash_messages(self, data: Dict) -> str:
+        """Create a deterministic hash of the messages and function definitions."""
+        data_str = json.dumps(data, sort_keys=True)
+        return hashlib.sha256(data_str.encode()).hexdigest()
     
     def chat_completion(
         self,
@@ -72,13 +72,17 @@ class CachedChatCompletion:
         max_completion_tokens: Optional[int] = 1000,
         functions: Optional[List[Dict]] = None,
         function_call: Optional[Union[str, Dict]] = None,
-    ) -> Dict:
+        reasoning_effort: str = 'high',
+    ) -> openai.types.chat.ChatCompletion:
         """Get chat completion with caching."""
-        # Create cache key from messages and function definitions
+        # Create cache key from all parameters
         cache_data = {
             "messages": messages,
             "functions": functions,
-            "function_call": function_call
+            "function_call": function_call,
+            "temperature": temperature,
+            "max_completion_tokens": max_completion_tokens,
+            "reasoning_effort": reasoning_effort
         }
         cache_key = self.hash_messages(cache_data)
         
@@ -86,12 +90,12 @@ class CachedChatCompletion:
         if cache_key in self.cache:
             self.cache_hits += 1
             cached_result = self.cache[cache_key]
-            self.total_cached_prompt_tokens += cached_result["usage"]["prompt_tokens"]
+            self.total_cached_prompt_tokens += cached_result.usage.prompt_tokens
             # Calculate cost for cached request
             step_cost = self.calculate_cost(
                 prompt_tokens=0,  # No new input tokens
                 completion_tokens=0,  # No new completion tokens
-                cached_tokens=cached_result["usage"]["prompt_tokens"],
+                cached_tokens=cached_result.usage.prompt_tokens,
                 model=model
             )
             self.total_cost += step_cost
@@ -105,6 +109,7 @@ class CachedChatCompletion:
             "messages": messages,
             "temperature": temperature,
             "max_completion_tokens": max_completion_tokens,
+            "reasoning_effort": reasoning_effort
         }
         if functions:
             params["functions"] = functions
@@ -113,32 +118,6 @@ class CachedChatCompletion:
             
         # Make API call
         response = self.client.chat.completions.create(**params)
-        
-        # Convert response to dict for caching
-        response_dict = {
-            "id": response.id,
-            "choices": [{
-                "message": {
-                    "content": choice.message.content,
-                    "role": choice.message.role,
-                }
-            } for choice in response.choices]
-        }
-        
-        # Handle function calls separately to avoid attribute errors
-        for i, choice in enumerate(response.choices):
-            if hasattr(choice.message, 'function_call') and choice.message.function_call:
-                response_dict["choices"][i]["message"]["function_call"] = {
-                    "name": choice.message.function_call.name,
-                    "arguments": choice.message.function_call.arguments
-                }
-        
-        # Add usage information
-        response_dict["usage"] = {
-            "prompt_tokens": response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
         
         # Update token counts and calculate cost
         self.total_prompt_tokens += response.usage.prompt_tokens
@@ -152,8 +131,8 @@ class CachedChatCompletion:
         self.total_cost += step_cost
         
         # Cache the response
-        self.cache[cache_key] = response_dict
-        return response_dict
+        self.cache[cache_key] = response
+        return response
     
     def get_token_usage(self) -> Dict[str, Union[int, float]]:
         """Get current token usage statistics and cost."""

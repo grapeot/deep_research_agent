@@ -179,7 +179,7 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
         query: User's query
         system_prompt: System prompt for the assistant
     """
-    # Initialize conversation
+    # Start a conversation
     conversation = []
     prompt = system_prompt + "\n\nUser's request:\n" + query
     print(f"\nTask:\n{prompt}")
@@ -196,36 +196,39 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
             start_time = time.time()
             
             # Get assistant's response using cached chat completion
-            logger.debug("Making chat completion request...")
             response = tools.chat_completion.chat_completion(
                 model=model,
                 messages=conversation,
                 functions=function_definitions,
                 function_call="auto",
+                reasoning_effort='high'
             )
-            logger.debug(f"Got response: {json.dumps(response, indent=2)}")
             
             # Calculate thinking time
             thinking_time = time.time() - start_time
             
-            # Get the assistant's message
-            assistant_message = response["choices"][0]["message"]
-            logger.debug(f"Assistant message: {json.dumps(assistant_message, indent=2)}")
+            # Log usage for this step
+            usage = tools.chat_completion.get_token_usage()
+            logger.info(f"\nStep Token Usage:")
+            logger.info(f"Input tokens: {usage['prompt_tokens']}")
+            logger.info(f"Output tokens: {usage['completion_tokens']}")
+            logger.info(f"Total tokens: {usage['total_tokens']}")
+            logger.info(f"Total cost: ${usage['total_cost']:.6f}")
+            logger.info(f"Thinking time: {thinking_time:.2f}s")
+            
+            assistant_message = response.choices[0].message
             
             # If the assistant wants to use a tool
-            if "function_call" in assistant_message:
-                logger.debug("Found function_call in assistant message")
+            if assistant_message.function_call:
                 # Parse and display the tool call details
-                func_name = assistant_message["function_call"]["name"]
-                arguments = json.loads(assistant_message["function_call"]["arguments"])
+                func_name = assistant_message.function_call.name
+                arguments = json.loads(assistant_message.function_call.arguments)
                 print(f"\nAssistant: Using tool '{func_name}' with parameters:")
                 for key, value in arguments.items():
                     print(f"  - {key}: {value}")
                 
                 # Execute the tool
                 result = handle_function_call(assistant_message)
-                logger.debug(f"Function call result: {result[:200] if result else None}...")
-                
                 print("\nTool output:")
                 if result and len(result) > 500:
                     print(f"{result[:500]}...\n[Output truncated, total length: {len(result)} chars]")
@@ -238,7 +241,7 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                     "content": None,
                     "function_call": {
                         "name": func_name,
-                        "arguments": assistant_message["function_call"]["arguments"]
+                        "arguments": assistant_message.function_call.arguments
                     }
                 })
                 # Include function result in the next user message
@@ -247,11 +250,10 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                     "content": f"Function {func_name} returned: {result}"
                 })
             else:
-                logger.debug("No function_call in assistant message")
                 # If it's a final response (no more tool calls needed)
                 print("\nAssistant's Response:")
-                print(assistant_message["content"])
-                conversation.append({"role": "assistant", "content": assistant_message["content"]})
+                print(assistant_message.content)
+                conversation.append({"role": "assistant", "content": assistant_message.content})
                 
                 # Give user a chance to provide additional input
                 print("\nWould you like to add any comments or provide additional input? (Press Enter to skip, 'q' to quit)")
@@ -309,7 +311,6 @@ def chat_loop(model: str, query: str, system_prompt: str) -> None:
                     
                     conversation.append({"role": "user", "content": reflection_prompt})
                     print("\nAsking assistant to reflect on task completion...")
-                
         except Exception as e:
             print(f"\nError: {str(e)}")
             print("Error details:", type(e).__name__)
