@@ -17,13 +17,19 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
+# Install Playwright browsers
+playwright install chromium
+
 # Run a research query
 python3 deep_research_agent.py "your research query"
 ```
 
 ## Available Tools
 
-1. **Web Search & Analysis**: Semantic search and content analysis with source attribution
+1. **Web Search & Analysis**: 
+   - Semantic search using DuckDuckGo
+   - Dynamic web content scraping with Playwright for JavaScript-heavy sites
+   - Content analysis with source attribution
 2. **File Operations**: Create/edit files and execute scripts with user confirmation
 3. **Package Management**: Install and manage Python packages with user confirmation
 4. **Terminal Commands**: Execute system commands with user confirmation
@@ -50,6 +56,13 @@ Example outputs in [examples/](examples/):
 - [Analysis Report](examples/nvda_analysis_report.md)
 - [Price Trend Chart](examples/nvda_trend.png)
 - [Analysis Script](examples/nvda_analysis.py)
+
+## Features
+
+- **Dynamic Web Scraping**: Uses Playwright for reliable scraping of modern web applications with JavaScript rendering
+- **Concurrent Processing**: Efficiently handles multiple URLs in parallel
+- **Smart Content Extraction**: Filters out noise and extracts meaningful content with proper formatting
+- **Error Handling**: Robust error handling with detailed logging for debugging
 
 ## Contributing
 

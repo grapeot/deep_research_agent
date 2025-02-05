@@ -12,7 +12,7 @@ from multiprocessing import Pool
 from typing import List, Optional, Union
 from urllib.parse import urlparse
 
-import aiohttp
+from playwright.async_api import async_playwright
 import html5lib
 from duckduckgo_search import DDGS
 
@@ -73,35 +73,30 @@ def format_search_results(results: List[dict]) -> str:
     return "\n".join(output)
 
 # Web Scraper Implementation
-async def fetch_page(url: str, session: Optional[aiohttp.ClientSession] = None) -> Optional[str]:
+async def fetch_page(url: str, context) -> Optional[str]:
     """
-    Asynchronously fetch a webpage's content.
+    Asynchronously fetch a webpage's content using Playwright.
 
     Args:
         url: URL to fetch
-        session: Optional aiohttp session to use
+        context: Playwright browser context
 
     Returns:
         Page content as string if successful, None otherwise
     """
-    async def _fetch(session: aiohttp.ClientSession) -> Optional[str]:
-        try:
-            logger.info(f"Fetching {url}")
-            async with session.get(url) as response:
-                if response.status == 200:
-                    content = await response.text()
-                    logger.info(f"Successfully fetched {url}")
-                    return content
-                logger.error(f"Error fetching {url}: HTTP {response.status}")
-                return None
-        except Exception as e:
-            logger.error(f"Error fetching {url}: {str(e)}")
-            return None
-
-    if session is None:
-        async with aiohttp.ClientSession() as new_session:
-            return await _fetch(new_session)
-    return await _fetch(session)
+    page = await context.new_page()
+    try:
+        logger.info(f"Fetching {url}")
+        await page.goto(url)
+        await page.wait_for_load_state('networkidle')
+        content = await page.content()
+        logger.info(f"Successfully fetched {url}")
+        return content
+    except Exception as e:
+        logger.error(f"Error fetching {url}: {str(e)}")
+        return None
+    finally:
+        await page.close()
 
 def parse_html(html_content: Optional[str]) -> str:
     """
@@ -189,7 +184,7 @@ def parse_html(html_content: Optional[str]) -> str:
 
 async def process_urls(urls: List[str], max_concurrent: int = 5) -> List[str]:
     """
-    Process multiple URLs concurrently.
+    Process multiple URLs concurrently using Playwright.
 
     Args:
         urls: List of URLs to process
@@ -198,14 +193,34 @@ async def process_urls(urls: List[str], max_concurrent: int = 5) -> List[str]:
     Returns:
         List of processed content strings
     """
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_page(url, session) for url in urls]
-        html_contents = await asyncio.gather(*tasks)
-    
-    with Pool() as pool:
-        results = pool.map(parse_html, html_contents)
-    
-    return results
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        try:
+            # Create browser contexts
+            n_contexts = min(len(urls), max_concurrent)
+            contexts = [await browser.new_context() for _ in range(n_contexts)]
+            
+            # Create tasks for each URL
+            tasks = []
+            for i, url in enumerate(urls):
+                context = contexts[i % len(contexts)]
+                task = fetch_page(url, context)
+                tasks.append(task)
+            
+            # Gather results
+            html_contents = await asyncio.gather(*tasks)
+            
+            # Parse HTML contents in parallel
+            with Pool() as pool:
+                results = pool.map(parse_html, html_contents)
+                
+            return results
+            
+        finally:
+            # Cleanup
+            for context in contexts:
+                await context.close()
+            await browser.close()
 
 def validate_url(url: str) -> bool:
     """
@@ -244,7 +259,7 @@ def perform_search(query: str, max_results: int = 5, max_retries: int = 3) -> st
 
 def fetch_web_content(urls: List[str], max_concurrent: int = 3) -> str:
     """
-    Fetch and process web content from multiple URLs.
+    Fetch and process web content from multiple URLs using Playwright.
 
     Args:
         urls: List of URLs to fetch and process
