@@ -67,7 +67,7 @@ def save_response_to_file(response: str, tool_calls: List[Dict] = None, round_ti
             for tool_call in tool_calls:
                 f.write(f"Tool: {tool_call.get('name', 'unknown')}\n")
                 f.write("Arguments:\n")
-                f.write(f"{json.dumps(tool_call.get('arguments', {}), indent=2)}\n")
+                f.write(f"{json.dumps(tool_call.get('arguments', {}), indent=2, ensure_ascii=False)}\n")
                 f.write("-" * 80 + "\n")
     logger.debug(f"Saved response to {filename}")
 
@@ -172,177 +172,133 @@ class ExecutorAgent:
             save_prompt_to_file(messages)
         
         try:
-            # Initialize total usage for this round
-            round_usage = TokenUsage(0, 0, 0, 0.0, 0.0, 0)
-            
-            # Start timer
-            start_time = time.time()
-            
-            logger.debug("Calling chat completion")
-            response = chat_completion.chat_completion(
-                messages=messages,
-                model=self.model,
-                functions=function_definitions,
-                function_call="auto"
-            )
-            
-            # Calculate thinking time and token usage
-            thinking_time = time.time() - start_time
-            usage = chat_completion.get_token_usage()
-            
-            # Log usage statistics
-            log_usage(usage, thinking_time, "Step", self.model)
-            
-            # Update round usage
-            round_usage.prompt_tokens += usage['prompt_tokens']
-            round_usage.completion_tokens += usage['completion_tokens']
-            round_usage.total_tokens += usage['total_tokens']
-            round_usage.total_cost += usage['total_cost']
-            round_usage.thinking_time += thinking_time
-            round_usage.cached_prompt_tokens += usage.get('cached_prompt_tokens', 0)
-            
-            # Update the context's total usage with this round's usage
-            if not context.total_usage:
-                context.total_usage = round_usage
-            else:
-                context.total_usage.prompt_tokens += round_usage.prompt_tokens
-                context.total_usage.completion_tokens += round_usage.completion_tokens
-                context.total_usage.total_tokens += round_usage.total_tokens
-                context.total_usage.total_cost += round_usage.total_cost
-                context.total_usage.thinking_time += round_usage.thinking_time
-                context.total_usage.cached_prompt_tokens += round_usage.cached_prompt_tokens
-            
-            message = response.choices[0].message
-            logger.debug(f"Received response type: {'content' if message.content else 'tool call'}")
-            
-            # Save response if debug mode is enabled
-            if context.debug:
-                tool_calls = []
-                if hasattr(message, 'tool_calls') and message.tool_calls:
-                    tool_calls = [{'name': tc.function.name, 'arguments': json.loads(tc.function.arguments)} 
-                                for tc in message.tool_calls]
-                elif hasattr(message, 'function_call') and message.function_call:
-                    tool_calls = [{'name': message.function_call.name, 
-                                 'arguments': json.loads(message.function_call.arguments)}]
-                save_response_to_file(message.content or "", tool_calls)
+            while True:  # Loop to handle chained tool calls
+                # Start timer
+                start_time = time.time()
+                
+                logger.debug("Calling chat completion")
+                response = chat_completion.chat_completion(
+                    messages=messages,
+                    model=self.model,
+                    functions=function_definitions,
+                    function_call="auto"
+                )
+                
+                # Calculate thinking time and token usage
+                thinking_time = time.time() - start_time
+                usage = chat_completion.get_token_usage()
+                
+                # Log usage statistics
+                log_usage(usage, thinking_time, "Step", self.model)
+                
+                # Create a new TokenUsage instance for this round
+                current_usage = TokenUsage(
+                    prompt_tokens=usage['prompt_tokens'],
+                    completion_tokens=usage['completion_tokens'],
+                    total_tokens=usage['total_tokens'],
+                    total_cost=usage['total_cost'],
+                    thinking_time=thinking_time,
+                    cached_prompt_tokens=usage.get('cached_prompt_tokens', 0)
+                )
+                
+                # Update the context's total usage
+                if not context.total_usage:
+                    # For the first round, create a new TokenUsage instance to avoid reference issues
+                    context.total_usage = TokenUsage(
+                        prompt_tokens=current_usage.prompt_tokens,
+                        completion_tokens=current_usage.completion_tokens,
+                        total_tokens=current_usage.total_tokens,
+                        total_cost=current_usage.total_cost,
+                        thinking_time=current_usage.thinking_time,
+                        cached_prompt_tokens=current_usage.cached_prompt_tokens
+                    )
+                else:
+                    # For subsequent rounds, calculate the incremental changes
+                    prev_messages_count = len(messages) - 2  # Subtract the last two messages (tool result and response)
+                    new_prompt_tokens = current_usage.prompt_tokens - (context.total_usage.prompt_tokens if prev_messages_count > 0 else 0)
+                    
+                    logger.debug(f"Token calculation - Previous prompt tokens: {context.total_usage.prompt_tokens}")
+                    logger.debug(f"Token calculation - Current prompt tokens: {current_usage.prompt_tokens}")
+                    logger.debug(f"Token calculation - New prompt tokens: {new_prompt_tokens}")
+                    
+                    # Update totals with new tokens
+                    context.total_usage.prompt_tokens += max(0, new_prompt_tokens)  # Only add if there are new tokens
+                    context.total_usage.completion_tokens += current_usage.completion_tokens
+                    context.total_usage.total_tokens = context.total_usage.prompt_tokens + context.total_usage.completion_tokens
+                    context.total_usage.total_cost += current_usage.total_cost
+                    context.total_usage.thinking_time += current_usage.thinking_time
+                    # For cached tokens, we want the total unique cached tokens
+                    context.total_usage.cached_prompt_tokens = max(
+                        context.total_usage.cached_prompt_tokens,
+                        current_usage.cached_prompt_tokens
+                    )
+                
+                message = response.choices[0].message
+                logger.debug(f"Received response type: {'content' if message.content else 'tool call'}")
+                
+                # Save response if debug mode is enabled
+                if context.debug:
+                    tool_calls = []
+                    if hasattr(message, 'tool_calls') and message.tool_calls:
+                        tool_calls = [{'name': tc.function.name, 'arguments': json.loads(tc.function.arguments)} 
+                                    for tc in message.tool_calls]
+                    elif hasattr(message, 'function_call') and message.function_call:
+                        tool_calls = [{'name': message.function_call.name, 
+                                     'arguments': json.loads(message.function_call.arguments)}]
+                    save_response_to_file(message.content or "", tool_calls)
 
-            # Check for tool calls (new format) or function call (old format)
-            tool_result = None
-            
-            if hasattr(message, 'tool_calls') and message.tool_calls:
-                logger.info("Processing tool_calls")
-                tool_call = message.tool_calls[0]  # For now, handle first tool call
-                func_name = tool_call.function.name
-                arguments = json.loads(tool_call.function.arguments)
-                logger.info(f"Tool call: {func_name}")
-                logger.info(f"Arguments: {json.dumps(arguments, indent=2)}")
+                # Check for tool calls (new format) or function call (old format)
+                has_tool_call = False
+                if hasattr(message, 'tool_calls') and message.tool_calls:
+                    logger.info("Processing tool_calls (new format)")
+                    if len(message.tool_calls) > 1:
+                        raise ValueError(f"Multiple tool calls not supported. Received {len(message.tool_calls)} calls.")
+                    tool_call = message.tool_calls[0]  # For now, handle first tool call
+                    func_name = tool_call.function.name
+                    arguments = json.loads(tool_call.function.arguments)
+                    logger.info(f"Tool call detected - Function: {func_name}")
+                    logger.debug(f"Tool arguments: {json.dumps(arguments, ensure_ascii=False)}")
+                    has_tool_call = True
+                elif hasattr(message, 'function_call') and message.function_call:
+                    logger.info("Processing function_call (old format)")
+                    func_name = message.function_call.name
+                    arguments = json.loads(message.function_call.arguments)
+                    logger.info(f"Function call detected - Function: {func_name}")
+                    logger.debug(f"Function arguments: {json.dumps(arguments, ensure_ascii=False)}")
+                    has_tool_call = True
                 
-                # Execute the tool
-                tool_result = self._execute_tool(func_name, arguments)
-                
-                # Add tool result to conversation using old function format
-                messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "function_call": {
-                        "name": func_name,
-                        "arguments": json.dumps(arguments)
-                    }
-                })
-                messages.append({
-                    "role": "function",
-                    "name": func_name,
-                    "content": str(tool_result)
-                })
-                
-                # Get model's interpretation of the result
-                start_time = time.time()  # Reset timer for second call
-                response = chat_completion.chat_completion(
-                    messages=messages,
-                    model=self.model,
-                    functions=function_definitions,
-                    function_call="auto"
-                )
-                
-                # Update usage statistics for the second call
-                second_usage = chat_completion.get_token_usage()
-                round_usage.prompt_tokens += second_usage['prompt_tokens']
-                round_usage.completion_tokens += second_usage['completion_tokens']
-                round_usage.total_tokens += second_usage['total_tokens']
-                round_usage.total_cost += second_usage.get('total_cost', 0)
-                round_usage.thinking_time += time.time() - start_time
-                round_usage.cached_prompt_tokens += second_usage.get('cached_prompt_tokens', 0)
-                
-                # Log usage for the second call
-                log_usage(second_usage, time.time() - start_time, "Tool Result Interpretation", self.model)
-                
-                # Update the context's total usage with the second call's usage
-                context.total_usage.prompt_tokens += second_usage['prompt_tokens']
-                context.total_usage.completion_tokens += second_usage['completion_tokens']
-                context.total_usage.total_tokens += second_usage['total_tokens']
-                context.total_usage.total_cost += second_usage.get('total_cost', 0)
-                context.total_usage.thinking_time += time.time() - start_time
-                context.total_usage.cached_prompt_tokens += second_usage.get('cached_prompt_tokens', 0)
-                
-                message = response.choices[0].message
-                
-            elif hasattr(message, 'function_call') and message.function_call:
-                logger.info("Processing function_call")
-                func_name = message.function_call.name
-                arguments = json.loads(message.function_call.arguments)
-                logger.info(f"Function call: {func_name}")
-                logger.info(f"Arguments: {json.dumps(arguments, indent=2)}")
-                
-                # Execute the tool
-                tool_result = self._execute_tool(func_name, arguments)
-                
-                # Add function call and result to conversation
-                messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "function_call": {
-                        "name": func_name,
-                        "arguments": json.dumps(arguments)
-                    }
-                })
-                messages.append({
-                    "role": "user",
-                    "content": f"Function {func_name} returned: {tool_result}"
-                })
-                
-                # Get model's interpretation of the result
-                start_time = time.time()  # Reset timer for second call
-                response = chat_completion.chat_completion(
-                    messages=messages,
-                    model=self.model,
-                    functions=function_definitions,
-                    function_call="auto"
-                )
-                
-                # Update usage statistics for the second call
-                second_usage = chat_completion.get_token_usage()
-                round_usage.prompt_tokens += second_usage['prompt_tokens']
-                round_usage.completion_tokens += second_usage['completion_tokens']
-                round_usage.total_tokens += second_usage['total_tokens']
-                round_usage.total_cost += second_usage.get('total_cost', 0)
-                round_usage.thinking_time += time.time() - start_time
-                round_usage.cached_prompt_tokens += second_usage.get('cached_prompt_tokens', 0)
-                
-                # Log usage for the second call
-                log_usage(second_usage, time.time() - start_time, "Tool Result Interpretation", self.model)
-                
-                # Update the context's total usage with the second call's usage
-                context.total_usage.prompt_tokens += second_usage['prompt_tokens']
-                context.total_usage.completion_tokens += second_usage['completion_tokens']
-                context.total_usage.total_tokens += second_usage['total_tokens']
-                context.total_usage.total_cost += second_usage.get('total_cost', 0)
-                context.total_usage.thinking_time += time.time() - start_time
-                context.total_usage.cached_prompt_tokens += second_usage.get('cached_prompt_tokens', 0)
-                
-                message = response.choices[0].message
-            
-            # Return appropriate response
-            return message.content or "Task completed successfully"
+                if has_tool_call:
+                    # Execute the tool
+                    logger.info(f"Executing tool: {func_name}")
+                    start_time = time.time()
+                    tool_result = self._execute_tool(func_name, arguments)
+                    tool_execution_time = time.time() - start_time
+                    logger.info(f"Tool execution completed in {tool_execution_time:.2f}s")
+                    
+                    # Add tool result to conversation
+                    messages.append({
+                        "role": "assistant",
+                        "content": None,
+                        "function_call": {
+                            "name": func_name,
+                            "arguments": json.dumps(arguments, ensure_ascii=False)
+                        }
+                    })
+                    # Include function result in the next user message instead of using 'function' role
+                    result_preview = tool_result[:200] + "..." if tool_result and len(tool_result) > 200 else tool_result
+                    logger.debug(f"Tool result preview: {result_preview}")
+                    messages.append({
+                        "role": "user",
+                        "content": f"Function {func_name} returned: {tool_result}"
+                    })
+                    logger.info("Added tool result to conversation history")
+                    
+                    # Continue the loop to get model's interpretation of the result
+                    continue
+                else:
+                    # No more tool calls, return the final response
+                    logger.info("No tool calls detected, returning final response")
+                    return message.content or "Task completed successfully"
             
         except Exception as e:
             logger.error(f"Error during execution: {e}", exc_info=True)
@@ -363,16 +319,22 @@ class ExecutorAgent:
                 logger.info("File creation completed")
             elif func_name == "perform_search":
                 from tools import perform_search
-                logger.info(f"Performing search: {arguments.get('query')}")
+                query = arguments.get('query', '')
+                logger.info(f"Starting search with query: {query}")
                 result = perform_search(**arguments)
                 result_lines = len(result.split('\n'))
-                logger.info(f"Search completed, found {result_lines} results")
+                result_chars = len(result)
+                logger.info(f"Search completed. Response size: {result_chars} chars, {result_lines} lines")
+                logger.debug(f"First 200 chars of response: {result[:200]}...")
             elif func_name == "fetch_web_content":
                 from tools import fetch_web_content
                 urls = arguments.get('urls', [])
-                logger.info(f"Fetching content from {len(urls)} URLs")
+                logger.info(f"Starting content fetch from {len(urls)} URLs")
+                for i, url in enumerate(urls, 1):
+                    logger.info(f"Fetching URL {i}/{len(urls)}: {url}")
                 result = fetch_web_content(**arguments)
-                logger.info("Content fetch completed")
+                result_size = len(result)
+                logger.info(f"Content fetch completed. Total response size: {result_size} chars")
             elif func_name == "execute_command":
                 command = arguments.get("command")
                 explanation = arguments.get("explanation")
@@ -381,8 +343,8 @@ class ExecutorAgent:
                     result = "Error: No command provided"
                     logger.error("Command execution failed: no command provided")
                 else:
-                    logger.info(f"Executing command: {command}")
-                    logger.info(f"Explanation: {explanation}")
+                    logger.info(f"Preparing to execute command: {command}")
+                    logger.info(f"Command explanation: {explanation}")
                     
                     # Ask for user confirmation
                     print(f"\nConfirm execution of command: {command}")
@@ -396,6 +358,7 @@ class ExecutorAgent:
                         # Execute command
                         import subprocess
                         try:
+                            logger.info("Starting command execution...")
                             cmd_result = subprocess.run(
                                 command,
                                 shell=True,
@@ -403,8 +366,10 @@ class ExecutorAgent:
                                 text=True,
                                 check=True
                             )
+                            stdout_size = len(cmd_result.stdout)
+                            stderr_size = len(cmd_result.stderr)
                             result = f"stdout:\n{cmd_result.stdout}\nstderr:\n{cmd_result.stderr}"
-                            logger.info("Command execution completed")
+                            logger.info(f"Command execution completed. stdout: {stdout_size} chars, stderr: {stderr_size} chars")
                         except subprocess.CalledProcessError as e:
                             error_msg = f"Error executing command: stdout={e.stdout}, stderr={e.stderr}"
                             logger.error(error_msg)
@@ -417,6 +382,11 @@ class ExecutorAgent:
                 error_msg = f"Unknown function: {func_name}"
                 logger.error(error_msg)
                 result = error_msg
+            
+            # Log the result size for all tools
+            if result:
+                result_size = len(result)
+                logger.info(f"Tool {func_name} completed with result size: {result_size} chars")
             
             return result
             

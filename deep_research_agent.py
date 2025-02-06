@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 def setup_logging():
     """Setup logging configuration."""
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.INFO,  # Default to INFO level
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
@@ -147,29 +147,98 @@ class ResearchSession:
         """
         self.model = model
         self.debug = debug
+        
+        # Set up debug logging if enabled
+        if debug:
+            logging.getLogger('tools').setLevel(logging.DEBUG)
+            logging.getLogger('executor_agent').setLevel(logging.DEBUG)
+            logging.getLogger('planner_agent').setLevel(logging.DEBUG)
+            logger.debug("Debug logging enabled")
+        
         self.planner = PlannerAgent(model=model)
         self.executor = ExecutorAgent(model=model)
         self.created_files: Set[str] = set()
         self.total_usage = TokenUsage(0, 0, 0, 0.0, 0.0, 0)
         self.agent_communication = AgentCommunication()
         
-        # Always create a fresh scratchpad
-        with open('scratchpad.md', 'w', encoding='utf-8') as f:
-            f.write("")  # Empty file
+        # Initialize scratchpad with required sections
+        self._initialize_scratchpad()
         self.created_files.add('scratchpad.md')
-        logger.info("Created empty scratchpad.md")
+        logger.info("Created scratchpad.md with initial sections")
 
-    def print_total_usage(self) -> None:
-        """Print total token usage statistics."""
-        if self.total_usage:
-            logger.info("\n=== Total Session Usage ===")
-            logger.info(f"Total Input Tokens: {self.total_usage.prompt_tokens:,}")
-            logger.info(f"Total Output Tokens: {self.total_usage.completion_tokens:,}")
-            logger.info(f"Total Cached Tokens: {self.total_usage.cached_prompt_tokens:,}")
-            logger.info(f"Total Tokens: {self.total_usage.total_tokens:,}")
-            logger.info(f"Total Cost: ${self.total_usage.total_cost:.6f}")
-            logger.info(f"Total Thinking Time: {self.total_usage.thinking_time:.2f}s")
-    
+    def _initialize_scratchpad(self) -> None:
+        """Initialize scratchpad.md with the required sections."""
+        initial_content = """### Background and Motivation
+(Planner writes: User/business requirements, macro objectives, why this problem needs to be solved)
+
+### Key Challenges and Analysis
+(Planner: Records of technical barriers, resource constraints, potential risks)
+
+### Verifiable Success Criteria
+(Planner: List measurable or verifiable goals to be achieved)
+
+### High-level Task Breakdown
+(Planner: List subtasks by phase, or break down into modules)
+
+### Current Status / Progress Tracking
+(Executor: Update completion status after each subtask. If needed, use bullet points or tables to show Done/In progress/Blocked status)
+
+### Next Steps and Action Items
+(Planner: Specific arrangements for the Executor)
+
+### Executor's Feedback or Assistance Requests
+(Executor: Write here when encountering blockers, questions, or need for more information during execution)
+"""
+        with open('scratchpad.md', 'w', encoding='utf-8') as f:
+            f.write(initial_content)
+
+    def _update_scratchpad_section(self, section_name: str, content: str, role: str = "Planner") -> None:
+        """Update a specific section in the scratchpad.
+        
+        Args:
+            section_name: Name of the section to update (without '###')
+            content: New content to append to the section
+            role: Role making the update ('Planner' or 'Executor')
+        """
+        try:
+            current_content = self._get_scratchpad_content()
+            sections = current_content.split('\n### ')
+            
+            # Find the target section
+            target_section_idx = -1
+            for i, section in enumerate(sections):
+                if section.startswith(section_name) or section.startswith('### ' + section_name):
+                    target_section_idx = i
+                    break
+            
+            if target_section_idx == -1:
+                logger.error(f"Section '{section_name}' not found in scratchpad")
+                return
+                
+            # Format the new content with timestamp and role
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            formatted_content = f"\n[{role} @ {timestamp}]\n{content.strip()}\n"
+            
+            # Append the new content to the section
+            if target_section_idx == 0:
+                sections[0] = sections[0] + formatted_content
+            else:
+                sections[target_section_idx] = sections[target_section_idx] + formatted_content
+            
+            # Reconstruct the document
+            updated_content = sections[0]
+            for section in sections[1:]:
+                updated_content += '\n### ' + section
+            
+            # Write back to file
+            with open('scratchpad.md', 'w', encoding='utf-8') as f:
+                f.write(updated_content)
+                
+            logger.debug(f"Updated section '{section_name}' in scratchpad")
+            
+        except Exception as e:
+            logger.error(f"Error updating scratchpad section: {e}")
+
     def _get_scratchpad_content(self) -> str:
         """Get current content of scratchpad.md."""
         try:
@@ -193,6 +262,13 @@ class ResearchSession:
         task_complete = False
         
         try:
+            # Initialize Background and Motivation with the initial query
+            self._update_scratchpad_section(
+                "Background and Motivation",
+                f"Initial research query: {initial_query}",
+                "Planner"
+            )
+            
             while not task_complete:
                 # Create planner context
                 planner_context = PlannerContext(
@@ -209,6 +285,42 @@ class ResearchSession:
                 if not next_steps:
                     logger.error("Planner failed to provide next steps")
                     break
+                
+                # Check if planner indicates task completion
+                if next_steps.strip().startswith("TASK_COMPLETE"):
+                    logger.info("Planner indicates task is complete")
+                    self._update_scratchpad_section(
+                        "Current Status / Progress Tracking",
+                        "Task completed successfully - Waiting for final user feedback",
+                        "Planner"
+                    )
+                    
+                    # Request final user feedback
+                    user_input = input("\nTask completed. Please provide any additional feedback or press Enter to finish (or 'q' to quit): ")
+                    if user_input.lower() == 'q':
+                        break
+                    if user_input:
+                        current_query = user_input
+                        self._update_scratchpad_section(
+                            "Current Status / Progress Tracking",
+                            f"Received additional user feedback after completion: {user_input} - Continuing task",
+                            "Planner"
+                        )
+                        continue
+                    
+                    # If no additional feedback, mark as complete and break
+                    self._update_scratchpad_section(
+                        "Current Status / Progress Tracking",
+                        "Task completed and confirmed by user",
+                        "Planner"
+                    )
+                    task_complete = True
+                    break
+                
+                # Check if planner wants to invoke executor
+                if not next_steps.strip().startswith("INVOKE_EXECUTOR"):
+                    logger.info("Planner did not request executor invocation")
+                    continue
                     
                 # Update total usage from planner
                 self.total_usage = planner_context.total_usage
@@ -225,22 +337,33 @@ class ResearchSession:
                 result = self.executor.execute(executor_context)
                 if not result:
                     logger.error("Executor failed to provide results")
+                    self._update_scratchpad_section(
+                        "Executor's Feedback or Assistance Requests",
+                        "Execution failed: No results provided",
+                        "Executor"
+                    )
                     break
                     
                 # Update total usage from executor
                 self.total_usage = executor_context.total_usage
                 
-                # Check if task is complete
-                if result.strip().startswith("TASK_COMPLETE"):
-                    logger.info("Task completed successfully")
-                    task_complete = True
-                    break
-                elif result.strip().startswith("WAIT_USER_CONFIRMATION"):
+                # Handle user input requests
+                if result.strip().startswith("WAIT_USER_CONFIRMATION"):
+                    self._update_scratchpad_section(
+                        "Current Status / Progress Tracking",
+                        "Waiting for user confirmation",
+                        "Executor"
+                    )
                     user_input = input("\nPlease review and provide feedback (or press Enter to continue, 'q' to quit): ")
                     if user_input.lower() == 'q':
                         break
                     if user_input:
                         current_query = user_input
+                        self._update_scratchpad_section(
+                            "Current Status / Progress Tracking",
+                            f"Received user feedback: {user_input}",
+                            "Executor"
+                        )
                         continue
                 
                 # Update conversation history
@@ -248,14 +371,40 @@ class ResearchSession:
                 
                 # Check for errors
                 if result.startswith("Error"):
+                    self._update_scratchpad_section(
+                        "Executor's Feedback or Assistance Requests",
+                        f"Error encountered: {result}",
+                        "Executor"
+                    )
                     break
                     
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
+            self._update_scratchpad_section(
+                "Current Status / Progress Tracking",
+                "Task interrupted by user",
+                "Planner"
+            )
         except Exception as e:
             logger.error(f"Error in chat loop: {e}", exc_info=True)
+            self._update_scratchpad_section(
+                "Current Status / Progress Tracking",
+                f"Error occurred: {str(e)}",
+                "Planner"
+            )
         finally:
             self.print_total_usage()
+
+    def print_total_usage(self) -> None:
+        """Print total token usage statistics."""
+        if self.total_usage:
+            logger.info("\n=== Total Session Usage ===")
+            logger.info(f"Total Input Tokens: {self.total_usage.prompt_tokens:,}")
+            logger.info(f"Total Output Tokens: {self.total_usage.completion_tokens:,}")
+            logger.info(f"Total Cached Tokens: {self.total_usage.cached_prompt_tokens:,}")
+            logger.info(f"Total Tokens: {self.total_usage.total_tokens:,}")
+            logger.info(f"Total Cost: ${self.total_usage.total_cost:.6f}")
+            logger.info(f"Total Thinking Time: {self.total_usage.thinking_time:.2f}s")
 
 def main() -> None:
     """Main function to parse arguments and start the research session."""

@@ -18,6 +18,8 @@ from playwright.async_api import async_playwright
 import html5lib
 from duckduckgo_search import DDGS
 import openai
+import requests
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
@@ -141,9 +143,9 @@ def search_with_retry(query: str, max_results: int = 10, max_retries: int = 3) -
                 
         except Exception as e:
             logger.error(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
-            if attempt < max_retries - 1:
+            if attempt < max_retries - 1:  # If not the last attempt
                 logger.info("Waiting 1 second before retry...")
-                time.sleep(1)
+                time.sleep(1)  # Wait 1 second before retry
             else:
                 logger.error(f"All {max_retries} attempts failed")
                 raise
@@ -165,6 +167,24 @@ def format_search_results(results: List[dict]) -> str:
         output.append(f"Title: {result.get('title', 'N/A')}")
         output.append(f"Snippet: {result.get('body', 'N/A')}")
     return "\n".join(output)
+
+def perform_search(query: str, max_results: int = 10, max_retries: int = 3) -> str:
+    """
+    Perform a web search and return formatted results.
+
+    Args:
+        query: Search query string
+        max_results: Maximum number of results to return
+        max_retries: Maximum number of retry attempts
+
+    Returns:
+        Formatted string containing search results or error message
+    """
+    try:
+        results = search_with_retry(query, max_results, max_retries)
+        return format_search_results(results)
+    except Exception as e:
+        return f"Error during search: {e}"
 
 # Web Scraper Implementation
 async def fetch_page(url: str, context) -> Optional[str]:
@@ -333,24 +353,6 @@ def validate_url(url: str) -> bool:
         return False
 
 # Main Tool Functions
-def perform_search(query: str, max_results: int = 10, max_retries: int = 3) -> str:
-    """
-    Perform a web search and return formatted results.
-
-    Args:
-        query: Search query string
-        max_results: Maximum number of results to return
-        max_retries: Maximum number of retry attempts
-
-    Returns:
-        Formatted string containing search results or error message
-    """
-    try:
-        results = search_with_retry(query, max_results, max_retries)
-        return format_search_results(results)
-    except Exception as e:
-        return f"Error during search: {e}"
-
 def fetch_web_content(urls: List[str], max_concurrent: int = 3) -> str:
     """
     Fetch and process web content from multiple URLs using Playwright.

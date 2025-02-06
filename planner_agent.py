@@ -72,7 +72,7 @@ def save_response_to_file(response: str, tool_calls: List[Dict] = None, round_ti
             for tool_call in tool_calls:
                 f.write(f"Tool: {tool_call.get('name', 'unknown')}\n")
                 f.write("Arguments:\n")
-                f.write(f"{json.dumps(tool_call.get('arguments', {}), indent=2)}\n")
+                f.write(f"{json.dumps(tool_call.get('arguments', {}), indent=2, ensure_ascii=False)}\n")
                 f.write("-" * 80 + "\n")
     logger.debug(f"Saved response to {filename}")
 
@@ -215,23 +215,24 @@ class PlannerAgent:
             log_usage(usage, thinking_time, "Step", self.model)
             
             # Update round usage
-            round_usage.prompt_tokens += usage['prompt_tokens']
-            round_usage.completion_tokens += usage['completion_tokens']
-            round_usage.total_tokens += usage['total_tokens']
-            round_usage.total_cost += usage['total_cost']
-            round_usage.thinking_time += thinking_time
-            round_usage.cached_prompt_tokens += usage.get('cached_prompt_tokens', 0)
+            round_usage.prompt_tokens = usage['prompt_tokens']
+            round_usage.completion_tokens = usage['completion_tokens']
+            round_usage.total_tokens = usage['total_tokens']
+            round_usage.total_cost = usage['total_cost']
+            round_usage.thinking_time = thinking_time
+            round_usage.cached_prompt_tokens = usage.get('cached_prompt_tokens', 0)
             
             # Update the context's total usage with this round's usage
             if not context.total_usage:
                 context.total_usage = round_usage
             else:
-                context.total_usage.prompt_tokens += round_usage.prompt_tokens
+                # Only add the new tokens from this round
+                context.total_usage.prompt_tokens = max(context.total_usage.prompt_tokens, round_usage.prompt_tokens)
                 context.total_usage.completion_tokens += round_usage.completion_tokens
-                context.total_usage.total_tokens += round_usage.total_tokens
+                context.total_usage.total_tokens = context.total_usage.prompt_tokens + context.total_usage.completion_tokens
                 context.total_usage.total_cost += round_usage.total_cost
                 context.total_usage.thinking_time += round_usage.thinking_time
-                context.total_usage.cached_prompt_tokens += round_usage.cached_prompt_tokens
+                context.total_usage.cached_prompt_tokens = max(context.total_usage.cached_prompt_tokens, round_usage.cached_prompt_tokens)
             
             message = response.choices[0].message
             logger.debug(f"Received response type: {'content' if message.content else 'function call'}")
