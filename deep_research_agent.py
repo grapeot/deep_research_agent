@@ -14,7 +14,7 @@ from datetime import datetime
 
 from planner_agent import PlannerAgent, PlannerContext
 from executor_agent import ExecutorAgent, ExecutorContext
-from common import TokenUsage
+from common import TokenUsage, TokenTracker
 
 # Configure logging
 logging.basicConfig(
@@ -158,7 +158,7 @@ class ResearchSession:
         self.planner = PlannerAgent(model=model)
         self.executor = ExecutorAgent(model=model)
         self.created_files: Set[str] = set()
-        self.total_usage = TokenUsage(0, 0, 0, 0.0, 0.0, 0)
+        self.token_tracker = TokenTracker()
         self.agent_communication = AgentCommunication()
         
         # Initialize scratchpad with required sections
@@ -276,7 +276,7 @@ class ResearchSession:
                     created_files=self.created_files,
                     user_input=current_query,
                     scratchpad_content=self._get_scratchpad_content(),
-                    total_usage=self.total_usage,
+                    total_usage=self.token_tracker.total_usage,
                     debug=self.debug
                 )
                 
@@ -317,19 +317,18 @@ class ResearchSession:
                     task_complete = True
                     break
                 
-                # Check if planner wants to invoke executor
-                if not next_steps.strip().startswith("INVOKE_EXECUTOR"):
-                    logger.info("Planner did not request executor invocation")
-                    continue
-                    
+                # If not complete, proceed with execution
+                logger.info("Proceeding with execution")
+                
                 # Update total usage from planner
-                self.total_usage = planner_context.total_usage
+                if planner_context.total_usage:
+                    self.token_tracker.update_from_token_usage(planner_context.total_usage)
                 
                 # Create executor context
                 executor_context = ExecutorContext(
                     created_files=self.created_files,
                     scratchpad_content=self._get_scratchpad_content(),
-                    total_usage=self.total_usage,
+                    total_usage=self.token_tracker.total_usage,
                     debug=self.debug
                 )
                 
@@ -345,7 +344,8 @@ class ResearchSession:
                     break
                     
                 # Update total usage from executor
-                self.total_usage = executor_context.total_usage
+                if executor_context.total_usage:
+                    self.token_tracker.update_from_token_usage(executor_context.total_usage)
                 
                 # Handle user input requests
                 if result.strip().startswith("WAIT_USER_CONFIRMATION"):
@@ -397,14 +397,7 @@ class ResearchSession:
 
     def print_total_usage(self) -> None:
         """Print total token usage statistics."""
-        if self.total_usage:
-            logger.info("\n=== Total Session Usage ===")
-            logger.info(f"Total Input Tokens: {self.total_usage.prompt_tokens:,}")
-            logger.info(f"Total Output Tokens: {self.total_usage.completion_tokens:,}")
-            logger.info(f"Total Cached Tokens: {self.total_usage.cached_prompt_tokens:,}")
-            logger.info(f"Total Tokens: {self.total_usage.total_tokens:,}")
-            logger.info(f"Total Cost: ${self.total_usage.total_cost:.6f}")
-            logger.info(f"Total Thinking Time: {self.total_usage.thinking_time:.2f}s")
+        self.token_tracker.print_total_usage()
 
 def main() -> None:
     """Main function to parse arguments and start the research session."""

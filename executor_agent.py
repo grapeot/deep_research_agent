@@ -16,7 +16,7 @@ import openai
 
 from tools import chat_completion
 from tool_definitions import function_definitions
-from common import calculate_cost, TokenUsage
+from common import TokenUsage, TokenTracker
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ def save_response_to_file(response: str, tool_calls: List[Dict] = None, round_ti
 def log_usage(usage: Dict[str, int], thinking_time: float, step_name: str, model: str):
     """Log token usage and cost information."""
     cached_tokens = usage.get('cached_prompt_tokens', 0)
-    cost = calculate_cost(
+    cost = TokenTracker.calculate_cost(
         prompt_tokens=usage['prompt_tokens'],
         completion_tokens=usage['completion_tokens'],
         cached_tokens=cached_tokens,
@@ -191,47 +191,19 @@ class ExecutorAgent:
                 # Log usage statistics
                 log_usage(usage, thinking_time, "Step", self.model)
                 
-                # Create a new TokenUsage instance for this round
-                current_usage = TokenUsage(
-                    prompt_tokens=usage['prompt_tokens'],
-                    completion_tokens=usage['completion_tokens'],
-                    total_tokens=usage['total_tokens'],
-                    total_cost=usage['total_cost'],
-                    thinking_time=thinking_time,
-                    cached_prompt_tokens=usage.get('cached_prompt_tokens', 0)
-                )
-                
                 # Update the context's total usage
                 if not context.total_usage:
-                    # For the first round, create a new TokenUsage instance to avoid reference issues
                     context.total_usage = TokenUsage(
-                        prompt_tokens=current_usage.prompt_tokens,
-                        completion_tokens=current_usage.completion_tokens,
-                        total_tokens=current_usage.total_tokens,
-                        total_cost=current_usage.total_cost,
-                        thinking_time=current_usage.thinking_time,
-                        cached_prompt_tokens=current_usage.cached_prompt_tokens
+                        prompt_tokens=usage['prompt_tokens'],
+                        completion_tokens=usage['completion_tokens'],
+                        total_tokens=usage['total_tokens'],
+                        total_cost=usage['total_cost'],
+                        thinking_time=thinking_time,
+                        cached_prompt_tokens=usage.get('cached_prompt_tokens', 0)
                     )
                 else:
-                    # For subsequent rounds, calculate the incremental changes
-                    prev_messages_count = len(messages) - 2  # Subtract the last two messages (tool result and response)
-                    new_prompt_tokens = current_usage.prompt_tokens - (context.total_usage.prompt_tokens if prev_messages_count > 0 else 0)
-                    
-                    logger.debug(f"Token calculation - Previous prompt tokens: {context.total_usage.prompt_tokens}")
-                    logger.debug(f"Token calculation - Current prompt tokens: {current_usage.prompt_tokens}")
-                    logger.debug(f"Token calculation - New prompt tokens: {new_prompt_tokens}")
-                    
-                    # Update totals with new tokens
-                    context.total_usage.prompt_tokens += max(0, new_prompt_tokens)  # Only add if there are new tokens
-                    context.total_usage.completion_tokens += current_usage.completion_tokens
-                    context.total_usage.total_tokens = context.total_usage.prompt_tokens + context.total_usage.completion_tokens
-                    context.total_usage.total_cost += current_usage.total_cost
-                    context.total_usage.thinking_time += current_usage.thinking_time
-                    # For cached tokens, we want the total unique cached tokens
-                    context.total_usage.cached_prompt_tokens = max(
-                        context.total_usage.cached_prompt_tokens,
-                        current_usage.cached_prompt_tokens
-                    )
+                    # Just use the current round's usage directly from chat_completion
+                    context.total_usage = chat_completion.token_tracker.get_total_usage()
                 
                 message = response.choices[0].message
                 logger.debug(f"Received response type: {'content' if message.content else 'tool call'}")

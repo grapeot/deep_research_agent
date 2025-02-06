@@ -16,7 +16,7 @@ import openai
 
 from tools import chat_completion
 from tool_definitions import function_definitions
-from common import calculate_cost, TokenUsage
+from common import TokenUsage, TokenTracker
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ def save_response_to_file(response: str, tool_calls: List[Dict] = None, round_ti
 def log_usage(usage: Dict[str, int], thinking_time: float, step_name: str, model: str):
     """Log token usage and cost information."""
     cached_tokens = usage.get('cached_prompt_tokens', 0)
-    cost = calculate_cost(
+    cost = TokenTracker.calculate_cost(
         prompt_tokens=usage['prompt_tokens'],
         completion_tokens=usage['completion_tokens'],
         cached_tokens=cached_tokens,
@@ -176,9 +176,6 @@ class PlannerAgent:
             save_prompt_to_file(messages)
         
         try:
-            # Initialize total usage for this round
-            round_usage = TokenUsage(0, 0, 0, 0.0, 0.0, 0)
-            
             # Start timer
             start_time = time.time()
             
@@ -204,7 +201,7 @@ class PlannerAgent:
                         "required": ["filename", "content"]
                     }
                 }],
-                function_call={"name": "create_file"}
+                function_call="auto"  # Changed from forcing function call to auto
             )
             
             # Calculate thinking time and token usage
@@ -214,25 +211,19 @@ class PlannerAgent:
             # Log usage statistics
             log_usage(usage, thinking_time, "Step", self.model)
             
-            # Update round usage
-            round_usage.prompt_tokens = usage['prompt_tokens']
-            round_usage.completion_tokens = usage['completion_tokens']
-            round_usage.total_tokens = usage['total_tokens']
-            round_usage.total_cost = usage['total_cost']
-            round_usage.thinking_time = thinking_time
-            round_usage.cached_prompt_tokens = usage.get('cached_prompt_tokens', 0)
-            
-            # Update the context's total usage with this round's usage
+            # Update the context's total usage
             if not context.total_usage:
-                context.total_usage = round_usage
+                context.total_usage = TokenUsage(
+                    prompt_tokens=usage['prompt_tokens'],
+                    completion_tokens=usage['completion_tokens'],
+                    total_tokens=usage['total_tokens'],
+                    total_cost=usage['total_cost'],
+                    thinking_time=thinking_time,
+                    cached_prompt_tokens=usage.get('cached_prompt_tokens', 0)
+                )
             else:
-                # Only add the new tokens from this round
-                context.total_usage.prompt_tokens = max(context.total_usage.prompt_tokens, round_usage.prompt_tokens)
-                context.total_usage.completion_tokens += round_usage.completion_tokens
-                context.total_usage.total_tokens = context.total_usage.prompt_tokens + context.total_usage.completion_tokens
-                context.total_usage.total_cost += round_usage.total_cost
-                context.total_usage.thinking_time += round_usage.thinking_time
-                context.total_usage.cached_prompt_tokens = max(context.total_usage.cached_prompt_tokens, round_usage.cached_prompt_tokens)
+                # Just use the current round's usage directly from chat_completion
+                context.total_usage = chat_completion.token_tracker.get_total_usage()
             
             message = response.choices[0].message
             logger.debug(f"Received response type: {'content' if message.content else 'function call'}")
@@ -245,9 +236,16 @@ class PlannerAgent:
                                  'arguments': json.loads(message.function_call.arguments)}]
                 save_response_to_file(message.content or "", tool_calls)
 
+            # Check if this is a direct response (e.g., TASK_COMPLETE)
+            if message.content:
+                if (message.content.strip().startswith("TASK_COMPLETE")):
+                    return message.content.strip()
+                else:
+                    logger.error(f'Unexpected content output: {message.content}')
+
             # Handle the function call to update scratchpad
             if not message.function_call:
-                logger.error("Model did not provide a function call despite being forced")
+                logger.error("Model did not provide a function call or content")
                 return "Error: Failed to update progress tracking"
             
             # Parse the function call
