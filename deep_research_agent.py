@@ -270,6 +270,7 @@ class ResearchSession:
             )
             
             while not task_complete:
+                logger.info("=== Control Flow: Starting new planning cycle ===")
                 # Create planner context
                 planner_context = PlannerContext(
                     conversation_history=conversation_history,
@@ -281,10 +282,13 @@ class ResearchSession:
                 )
                 
                 # Get next steps from planner
+                logger.info("=== Control Flow: Requesting next steps from Planner ===")
                 next_steps = self.planner.plan(planner_context)
                 if not next_steps:
                     logger.error("Planner failed to provide next steps")
                     break
+                
+                logger.info(f"Planner next steps:\n{next_steps}")
                 
                 # Check if planner indicates task completion
                 if next_steps.strip().startswith("TASK_COMPLETE"):
@@ -318,7 +322,7 @@ class ResearchSession:
                     break
                 
                 # If not complete, proceed with execution
-                logger.info("Proceeding with execution")
+                logger.info("=== Control Flow: Transferring control to Executor ===")
                 
                 # Update total usage from planner
                 if planner_context.total_usage:
@@ -343,6 +347,8 @@ class ResearchSession:
                     )
                     break
                     
+                logger.info(f"Executor result:\n{result}")
+                
                 # Update total usage from executor
                 if executor_context.total_usage:
                     self.token_tracker.update_from_token_usage(executor_context.total_usage)
@@ -378,6 +384,8 @@ class ResearchSession:
                     )
                     break
                     
+                logger.info("=== Control Flow: Executor completed, returning control to Planner ===")
+                
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
             self._update_scratchpad_section(
@@ -410,8 +418,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--model",
-        default="o3-mini",
-        help="OpenAI model to use (default: o3-mini)"
+        default="gpt-4o",
+        help="OpenAI model to use (default: gpt-4o)"
     )
     parser.add_argument(
         "--debug",

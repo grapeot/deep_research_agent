@@ -177,12 +177,18 @@ class ExecutorAgent:
                 start_time = time.time()
                 
                 logger.debug("Calling chat completion")
-                response = chat_completion.chat_completion(
-                    messages=messages,
-                    model=self.model,
-                    functions=function_definitions,
-                    function_call="auto"
-                )
+                chat_completion_args = {
+                    "messages": messages,
+                    "model": self.model,
+                    "functions": function_definitions,
+                    "function_call": "auto"
+                }
+                
+                # Add reasoning_effort for models starting with 'o'
+                if self.model.startswith('o'):
+                    chat_completion_args["reasoning_effort"] = 'high'
+                
+                response = chat_completion.chat_completion(**chat_completion_args)
                 
                 # Calculate thinking time and token usage
                 thinking_time = time.time() - start_time
@@ -207,6 +213,15 @@ class ExecutorAgent:
                 
                 message = response.choices[0].message
                 logger.debug(f"Received response type: {'content' if message.content else 'tool call'}")
+                
+                # Log the actual response content
+                if message.content:
+                    logger.info(f"Executor Response Content:\n{message.content}")
+                elif hasattr(message, 'tool_calls') and message.tool_calls:
+                    for tool_call in message.tool_calls:
+                        logger.info(f"Executor Tool Call:\nName: {tool_call.function.name}\nArguments: {tool_call.function.arguments}")
+                elif hasattr(message, 'function_call') and message.function_call:
+                    logger.info(f"Executor Function Call:\nName: {message.function_call.name}\nArguments: {message.function_call.arguments}")
                 
                 # Save response if debug mode is enabled
                 if context.debug:

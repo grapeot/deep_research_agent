@@ -180,10 +180,10 @@ class PlannerAgent:
             start_time = time.time()
             
             logger.debug("Calling chat completion")
-            response = chat_completion.chat_completion(
-                messages=messages,
-                model=self.model,
-                functions=[{
+            chat_completion_args = {
+                "messages": messages,
+                "model": self.model,
+                "functions": [{
                     "name": "create_file",
                     "description": "Create or update a file with the given content",
                     "parameters": {
@@ -201,8 +201,14 @@ class PlannerAgent:
                         "required": ["filename", "content"]
                     }
                 }],
-                function_call="auto"  # Changed from forcing function call to auto
-            )
+                "function_call": "auto"
+            }
+            
+            # Add reasoning_effort for models starting with 'o'
+            if self.model.startswith('o'):
+                chat_completion_args["reasoning_effort"] = 'high'
+            
+            response = chat_completion.chat_completion(**chat_completion_args)
             
             # Calculate thinking time and token usage
             thinking_time = time.time() - start_time
@@ -228,6 +234,12 @@ class PlannerAgent:
             message = response.choices[0].message
             logger.debug(f"Received response type: {'content' if message.content else 'function call'}")
             
+            # Log the actual response content
+            if message.content:
+                logger.info(f"Planner Response Content:\n{message.content}")
+            elif hasattr(message, 'function_call') and message.function_call:
+                logger.info(f"Planner Function Call:\nName: {message.function_call.name}\nArguments: {message.function_call.arguments}")
+            
             # Save response if debug mode is enabled
             if context.debug:
                 tool_calls = []
@@ -236,12 +248,14 @@ class PlannerAgent:
                                  'arguments': json.loads(message.function_call.arguments)}]
                 save_response_to_file(message.content or "", tool_calls)
 
-            # Check if this is a direct response (e.g., TASK_COMPLETE)
+            # Check for tool calls (new format) or function call (old format)
             if message.content:
-                if (message.content.strip().startswith("TASK_COMPLETE")):
-                    return message.content.strip()
+                content = message.content.strip()
+                if "TASK_COMPLETE" in content:
+                    return "TASK_COMPLETE"
                 else:
-                    logger.error(f'Unexpected content output: {message.content}')
+                    logger.error(f'Unexpected content output: {content}')
+                    return "Error: Invalid planner output format"
 
             # Handle the function call to update scratchpad
             if not message.function_call:

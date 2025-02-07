@@ -29,6 +29,10 @@ class TokenTracker:
         "o3-mini": {
             "input": 1.10,
             "output": 4.40
+        },
+        "gpt-4o": {
+            "input": 2.50,
+            "output": 10.00
         }
     }
     

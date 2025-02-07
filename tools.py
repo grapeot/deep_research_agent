@@ -35,7 +35,7 @@ class CachedChatCompletion:
     def chat_completion(
         self,
         messages: List[Dict[str, str]],
-        model: str = "o3-mini",
+        model: str = "gpt-4o",
         temperature: float = 1.0,
         functions: Optional[List[Dict]] = None,
         function_call: Optional[Union[str, Dict]] = None,
@@ -46,9 +46,13 @@ class CachedChatCompletion:
         params = {
             "model": model,
             "messages": messages,
-            "temperature": temperature,
-            "reasoning_effort": reasoning_effort
+            "temperature": temperature
         }
+        
+        # Add reasoning_effort only for models starting with 'o'
+        if model.startswith('o'):
+            params["reasoning_effort"] = reasoning_effort
+            
         if functions:
             params["functions"] = functions
         if function_call:
