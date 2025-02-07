@@ -18,47 +18,24 @@ from playwright.async_api import async_playwright
 import html5lib
 from duckduckgo_search import DDGS
 import openai
+import requests
+from bs4 import BeautifulSoup
+
+from common import TokenTracker
 
 logger = logging.getLogger(__name__)
 
 class CachedChatCompletion:
     """Handles chat completions with token usage tracking."""
     
-    # Model pricing per 1M tokens
-    MODEL_PRICING = {
-        "o1": {
-            "input": 15.0,
-            "output": 60.0
-        },
-        "o3-mini": {
-            "input": 1.10,
-            "output": 4.40
-        }
-    }
-    
     def __init__(self):
         self.client = openai.OpenAI()
-        self.total_prompt_tokens = 0
-        self.total_completion_tokens = 0
-        self.total_cached_prompt_tokens = 0
-        self.total_cost = 0.0
-    
-    def calculate_cost(self, prompt_tokens: int, completion_tokens: int, cached_tokens: int, model: str) -> float:
-        """Calculate the cost of API usage based on model pricing."""
-        pricing = self.MODEL_PRICING.get(model, self.MODEL_PRICING["o3-mini"])
-        
-        # Convert to millions and calculate
-        # For cached tokens, we get a 50% discount
-        input_cost = (prompt_tokens / 1_000_000) * pricing["input"]
-        cached_cost = (cached_tokens / 1_000_000) * (pricing["input"] * 0.5)  # 50% discount on cached tokens
-        output_cost = (completion_tokens / 1_000_000) * pricing["output"]
-        
-        return input_cost + cached_cost + output_cost
+        self.token_tracker = TokenTracker()
     
     def chat_completion(
         self,
         messages: List[Dict[str, str]],
-        model: str = "o3-mini",
+        model: str = "gpt-4o",
         temperature: float = 1.0,
         functions: Optional[List[Dict]] = None,
         function_call: Optional[Union[str, Dict]] = None,
@@ -69,9 +46,13 @@ class CachedChatCompletion:
         params = {
             "model": model,
             "messages": messages,
-            "temperature": temperature,
-            "reasoning_effort": reasoning_effort
+            "temperature": temperature
         }
+        
+        # Add reasoning_effort only for models starting with 'o'
+        if model.startswith('o'):
+            params["reasoning_effort"] = reasoning_effort
+            
         if functions:
             params["functions"] = functions
         if function_call:
@@ -80,33 +61,29 @@ class CachedChatCompletion:
         # Make API call
         response = self.client.chat.completions.create(**params)
         
-        # Get cached tokens from prompt_tokens_details if available
-        cached_tokens = 0
-        if hasattr(response.usage, 'prompt_tokens_details'):
-            cached_tokens = getattr(response.usage.prompt_tokens_details, 'cached_tokens', 0)
-            self.total_cached_prompt_tokens += cached_tokens
+        # Update token usage tracking
+        usage = {
+            'prompt_tokens': response.usage.prompt_tokens,
+            'completion_tokens': response.usage.completion_tokens,
+            'total_tokens': response.usage.total_tokens,
+            'cached_prompt_tokens': getattr(response.usage.prompt_tokens_details, 'cached_tokens', 0) if hasattr(response.usage, 'prompt_tokens_details') else 0
+        }
         
-        # Update token counts and calculate cost
-        self.total_prompt_tokens += response.usage.prompt_tokens
-        self.total_completion_tokens += response.usage.completion_tokens
-        step_cost = self.calculate_cost(
-            prompt_tokens=response.usage.prompt_tokens - cached_tokens,  # Only count non-cached tokens
-            completion_tokens=response.usage.completion_tokens,
-            cached_tokens=cached_tokens,
-            model=model
-        )
-        self.total_cost += step_cost
+        # Calculate thinking time and update usage
+        thinking_time = 0.0  # This should be passed in from the agent
+        self.token_tracker.update_usage(usage, thinking_time, model)
         
         return response
     
     def get_token_usage(self) -> Dict[str, Union[int, float]]:
-        """Get current token usage statistics and cost."""
+        """Get current token usage statistics."""
+        usage = self.token_tracker.get_total_usage()
         return {
-            "prompt_tokens": self.total_prompt_tokens,
-            "completion_tokens": self.total_completion_tokens,
-            "cached_prompt_tokens": self.total_cached_prompt_tokens,
-            "total_tokens": self.total_prompt_tokens + self.total_completion_tokens,
-            "total_cost": self.total_cost
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "cached_prompt_tokens": usage.cached_prompt_tokens,
+            "total_tokens": usage.total_tokens,
+            "total_cost": usage.total_cost
         }
 
 # Initialize global chat completion instance
@@ -141,9 +118,9 @@ def search_with_retry(query: str, max_results: int = 10, max_retries: int = 3) -
                 
         except Exception as e:
             logger.error(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
-            if attempt < max_retries - 1:
+            if attempt < max_retries - 1:  # If not the last attempt
                 logger.info("Waiting 1 second before retry...")
-                time.sleep(1)
+                time.sleep(1)  # Wait 1 second before retry
             else:
                 logger.error(f"All {max_retries} attempts failed")
                 raise
@@ -165,6 +142,24 @@ def format_search_results(results: List[dict]) -> str:
         output.append(f"Title: {result.get('title', 'N/A')}")
         output.append(f"Snippet: {result.get('body', 'N/A')}")
     return "\n".join(output)
+
+def perform_search(query: str, max_results: int = 10, max_retries: int = 3) -> str:
+    """
+    Perform a web search and return formatted results.
+
+    Args:
+        query: Search query string
+        max_results: Maximum number of results to return
+        max_retries: Maximum number of retry attempts
+
+    Returns:
+        Formatted string containing search results or error message
+    """
+    try:
+        results = search_with_retry(query, max_results, max_retries)
+        return format_search_results(results)
+    except Exception as e:
+        return f"Error during search: {e}"
 
 # Web Scraper Implementation
 async def fetch_page(url: str, context) -> Optional[str]:
@@ -333,24 +328,6 @@ def validate_url(url: str) -> bool:
         return False
 
 # Main Tool Functions
-def perform_search(query: str, max_results: int = 10, max_retries: int = 3) -> str:
-    """
-    Perform a web search and return formatted results.
-
-    Args:
-        query: Search query string
-        max_results: Maximum number of results to return
-        max_retries: Maximum number of retry attempts
-
-    Returns:
-        Formatted string containing search results or error message
-    """
-    try:
-        results = search_with_retry(query, max_results, max_retries)
-        return format_search_results(results)
-    except Exception as e:
-        return f"Error during search: {e}"
-
 def fetch_web_content(urls: List[str], max_concurrent: int = 3) -> str:
     """
     Fetch and process web content from multiple URLs using Playwright.
