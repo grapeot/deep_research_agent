@@ -360,21 +360,19 @@ def fetch_web_content(urls: List[str], max_concurrent: int = 3) -> str:
 
 def create_file(filename: str, content: str) -> str:
     """
-    Create a file with the given content and return its content.
+    Create a file with the given content and return a success message.
 
     Args:
         filename: Name of the file to create
         content: Content to write to the file
 
     Returns:
-        File content after writing or error message
+        Success message or error message
     """
     try:
         with open(filename, 'w', encoding='utf-8') as f:
             f.write(content)
-        # Read back the content to confirm
-        with open(filename, 'r', encoding='utf-8') as f:
-            return f.read()
+        return f"Successfully created/updated file: {filename}"
     except Exception as e:
         return f"Error creating file: {str(e)}"
 
