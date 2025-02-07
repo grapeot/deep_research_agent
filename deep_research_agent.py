@@ -138,14 +138,16 @@ class AgentCommunication:
 class ResearchSession:
     """Manages the research session with Planner and Executor agents."""
     
-    def __init__(self, model: str, debug: bool = False):
+    def __init__(self, planner_model: str, executor_model: str, debug: bool = False):
         """Initialize the research session.
         
         Args:
-            model: The OpenAI model to use
+            planner_model: The OpenAI model to use for Planner agent
+            executor_model: The OpenAI model to use for Executor agent
             debug: Whether to enable debug mode
         """
-        self.model = model
+        self.planner_model = planner_model
+        self.executor_model = executor_model
         self.debug = debug
         
         # Set up debug logging if enabled
@@ -155,8 +157,8 @@ class ResearchSession:
             logging.getLogger('planner_agent').setLevel(logging.DEBUG)
             logger.debug("Debug logging enabled")
         
-        self.planner = PlannerAgent(model=model)
-        self.executor = ExecutorAgent(model=model)
+        self.planner = PlannerAgent(model=planner_model)
+        self.executor = ExecutorAgent(model=executor_model)
         self.created_files: Set[str] = set()
         self.token_tracker = TokenTracker()
         self.agent_communication = AgentCommunication()
@@ -417,9 +419,14 @@ def main() -> None:
         help="The research query or task to investigate"
     )
     parser.add_argument(
-        "--model",
+        "--planner-model",
         default="gpt-4o",
-        help="OpenAI model to use (default: gpt-4o)"
+        help="OpenAI model to use for Planner agent (default: gpt-4o)"
+    )
+    parser.add_argument(
+        "--executor-model",
+        default="gpt-4o",
+        help="OpenAI model to use for Executor agent (default: gpt-4o)"
     )
     parser.add_argument(
         "--debug",
@@ -430,7 +437,11 @@ def main() -> None:
     args = parser.parse_args()
     
     # Start research session
-    session = ResearchSession(model=args.model, debug=args.debug)
+    session = ResearchSession(
+        planner_model=args.planner_model,
+        executor_model=args.executor_model,
+        debug=args.debug
+    )
     session.chat_loop(args.query)
 
 if __name__ == "__main__":
