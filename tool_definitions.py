@@ -46,7 +46,7 @@ function_definitions = [
     },
     {
         "name": "create_file",
-        "description": "Create or change a file with the given content and return its content for verification.",
+        "description": "Create or change a file with the given content and return a success message.",
         "parameters": {
             "type": "object",
             "properties": {

@@ -176,107 +176,108 @@ class PlannerAgent:
             save_prompt_to_file(messages)
         
         try:
-            # Start timer
-            start_time = time.time()
-            
-            logger.debug("Calling chat completion")
-            chat_completion_args = {
-                "messages": messages,
-                "model": self.model,
-                "functions": [{
-                    "name": "create_file",
-                    "description": "Create or update a file with the given content",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "filename": {
-                                "type": "string",
-                                "description": "Name of the file to create"
+            while True:  # Add loop for retries
+                # Start timer
+                start_time = time.time()
+                
+                logger.debug("Calling chat completion")
+                chat_completion_args = {
+                    "messages": messages,
+                    "model": self.model,
+                    "functions": [{
+                        "name": "create_file",
+                        "description": "Create or update a file with the given content",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "filename": {
+                                    "type": "string",
+                                    "description": "Name of the file to create"
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "Content to write to the file"
+                                }
                             },
-                            "content": {
-                                "type": "string",
-                                "description": "Content to write to the file"
-                            }
-                        },
-                        "required": ["filename", "content"]
-                    }
-                }],
-                "function_call": "auto"
-            }
-            
-            # Add reasoning_effort for models starting with 'o'
-            if self.model.startswith('o'):
-                chat_completion_args["reasoning_effort"] = 'high'
-            
-            response = chat_completion.chat_completion(**chat_completion_args)
-            
-            # Calculate thinking time and token usage
-            thinking_time = time.time() - start_time
-            usage = chat_completion.get_token_usage()
-            
-            # Log usage statistics
-            log_usage(usage, thinking_time, "Step", self.model)
-            
-            # Update the context's total usage
-            if not context.total_usage:
-                context.total_usage = TokenUsage(
-                    prompt_tokens=usage['prompt_tokens'],
-                    completion_tokens=usage['completion_tokens'],
-                    total_tokens=usage['total_tokens'],
-                    total_cost=usage['total_cost'],
-                    thinking_time=thinking_time,
-                    cached_prompt_tokens=usage.get('cached_prompt_tokens', 0)
-                )
-            else:
-                # Just use the current round's usage directly from chat_completion
-                context.total_usage = chat_completion.token_tracker.get_total_usage()
-            
-            message = response.choices[0].message
-            logger.debug(f"Received response type: {'content' if message.content else 'function call'}")
-            
-            # Log the actual response content
-            if message.content:
-                logger.info(f"Planner Response Content:\n{message.content}")
-            elif hasattr(message, 'function_call') and message.function_call:
-                logger.info(f"Planner Function Call:\nName: {message.function_call.name}\nArguments: {message.function_call.arguments}")
-            
-            # Save response if debug mode is enabled
-            if context.debug:
-                tool_calls = []
-                if hasattr(message, 'function_call') and message.function_call:
-                    tool_calls = [{'name': message.function_call.name, 
-                                 'arguments': json.loads(message.function_call.arguments)}]
-                save_response_to_file(message.content or "", tool_calls)
-
-            # Check for tool calls (new format) or function call (old format)
-            if message.content:
-                content = message.content.strip()
-                if "TASK_COMPLETE" in content:
-                    return "TASK_COMPLETE"
+                            "required": ["filename", "content"]
+                        }
+                    }],
+                    "function_call": "auto"
+                }
+                
+                # Add reasoning_effort for models starting with 'o'
+                if self.model.startswith('o'):
+                    chat_completion_args["reasoning_effort"] = 'high'
+                
+                response = chat_completion.chat_completion(**chat_completion_args)
+                
+                # Calculate thinking time and token usage
+                thinking_time = time.time() - start_time
+                usage = chat_completion.get_token_usage()
+                
+                # Log usage statistics
+                log_usage(usage, thinking_time, "Step", self.model)
+                
+                # Update the context's total usage
+                if not context.total_usage:
+                    context.total_usage = TokenUsage(
+                        prompt_tokens=usage['prompt_tokens'],
+                        completion_tokens=usage['completion_tokens'],
+                        total_tokens=usage['total_tokens'],
+                        total_cost=usage['total_cost'],
+                        thinking_time=thinking_time,
+                        cached_prompt_tokens=usage.get('cached_prompt_tokens', 0)
+                    )
                 else:
-                    logger.error(f'Unexpected content output: {content}')
-                    return "Error: Invalid planner output format"
+                    # Just use the current round's usage directly from chat_completion
+                    context.total_usage = chat_completion.token_tracker.get_total_usage()
+                
+                message = response.choices[0].message
+                logger.debug(f"Received response type: {'content' if message.content else 'function call'}")
+                
+                # Log the actual response content
+                if message.content:
+                    logger.info(f"Planner Response Content:\n{message.content}")
+                elif hasattr(message, 'function_call') and message.function_call:
+                    logger.info(f"Planner Function Call:\nName: {message.function_call.name}\nArguments: {message.function_call.arguments}")
+                
+                # Save response if debug mode is enabled
+                if context.debug:
+                    tool_calls = []
+                    if hasattr(message, 'function_call') and message.function_call:
+                        tool_calls = [{'name': message.function_call.name, 
+                                     'arguments': json.loads(message.function_call.arguments)}]
+                    save_response_to_file(message.content or "", tool_calls)
 
-            # Handle the function call to update scratchpad
-            if not message.function_call:
-                logger.error("Model did not provide a function call or content")
-                return "Error: Failed to update progress tracking"
-            
-            # Parse the function call
-            arguments = json.loads(message.function_call.arguments)
-            filename = arguments.get("filename")
-            content = arguments.get("content")
-            
-            # Validate that we're updating the scratchpad
-            if filename != "scratchpad.md":
-                logger.warning(f"Model tried to create/update {filename} instead of scratchpad.md")
-                filename = "scratchpad.md"
-            
-            # Update the scratchpad
-            from tools import create_file
-            create_file(filename=filename, content=content)
-            
-            return "Successfully updated scratchpad.md with next steps"
+                # Check for tool calls (new format) or function call (old format)
+                if message.content:
+                    content = message.content.strip()
+                    if "TASK_COMPLETE" in content:
+                        return "TASK_COMPLETE"
+                    else:
+                        warning = "Warning: Do not communicate with executor directly in the output. Please use create_file tool to update scratchpad.md instead."
+                        logger.error(f'Unexpected content output: {content}\n{warning}')
+                        messages.append({
+                            "role": "user",
+                            "content": warning
+                        })
+                        continue  # Retry with the warning message
+
+                # Handle the function call to update file
+                if not message.function_call:
+                    logger.error("Model did not provide a function call or content")
+                    return "Error: Failed to update progress tracking"
+                
+                # Parse the function call
+                arguments = json.loads(message.function_call.arguments)
+                filename = arguments.get("filename")
+                content = arguments.get("content")
+                
+                # Update the file
+                from tools import create_file
+                create_file(filename=filename, content=content)
+                
+                return f"Successfully updated {filename} with new content"
             
         except Exception as e:
             logger.error(f"Error during planning: {e}", exc_info=True)
