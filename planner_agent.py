@@ -267,16 +267,11 @@ class PlannerAgent:
             filename = arguments.get("filename")
             content = arguments.get("content")
             
-            # Validate that we're updating the scratchpad
-            if filename != "scratchpad.md":
-                logger.warning(f"Model tried to create/update {filename} instead of scratchpad.md")
-                filename = "scratchpad.md"
-            
-            # Update the scratchpad
+            # Update the file
             from tools import create_file
             create_file(filename=filename, content=content)
             
-            return "Successfully updated scratchpad.md with next steps"
+            return f"Successfully updated {filename} with new content"
             
         except Exception as e:
             logger.error(f"Error during planning: {e}", exc_info=True)
