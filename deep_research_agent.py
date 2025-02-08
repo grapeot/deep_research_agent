@@ -34,7 +34,7 @@ def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Deep Research Agent')
     parser.add_argument('query', help='The research query to process')
-    parser.add_argument('--model', default='gpt-4-turbo-preview', help='The OpenAI model to use')
+    parser.add_argument('--model', default='gpt-4o', help='The OpenAI model to use')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     return parser.parse_args()
 
