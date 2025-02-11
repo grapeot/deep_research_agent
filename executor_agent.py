@@ -194,10 +194,10 @@ class ExecutorAgent:
                 thinking_time = time.time() - start_time
                 usage = chat_completion.get_token_usage()
                 
-                # Log usage statistics
+                # Log usage statistics for this step only (don't update global tracker here)
                 log_usage(usage, thinking_time, "Step", self.model)
                 
-                # Update the context's total usage
+                # Store the current step's usage in context (without updating global tracker)
                 if not context.total_usage:
                     context.total_usage = TokenUsage(
                         prompt_tokens=usage['prompt_tokens'],
@@ -208,8 +208,13 @@ class ExecutorAgent:
                         cached_prompt_tokens=usage.get('cached_prompt_tokens', 0)
                     )
                 else:
-                    # Just use the current round's usage directly from chat_completion
-                    context.total_usage = chat_completion.token_tracker.get_total_usage()
+                    # Add this step's usage to context's running total
+                    context.total_usage.prompt_tokens += usage['prompt_tokens']
+                    context.total_usage.completion_tokens += usage['completion_tokens']
+                    context.total_usage.total_tokens += usage['total_tokens']
+                    context.total_usage.total_cost += usage['total_cost']
+                    context.total_usage.thinking_time += thinking_time
+                    context.total_usage.cached_prompt_tokens += usage.get('cached_prompt_tokens', 0)
                 
                 message = response.choices[0].message
                 logger.debug(f"Received response type: {'content' if message.content else 'tool call'}")

@@ -32,6 +32,19 @@ class PlannerContext:
     scratchpad_content: Optional[str] = None
     total_usage: Optional[TokenUsage] = None
     debug: bool = DEBUG_MODE  # Default to command line debug setting
+    files_changed_this_round: Set[str] = None  # Track files changed in current round
+
+    def __post_init__(self):
+        if self.files_changed_this_round is None:
+            self.files_changed_this_round = set()
+
+    def track_file_change(self, filename: str):
+        """Track that a file was changed in this round."""
+        self.files_changed_this_round.add(filename)
+
+    def reset_file_changes(self):
+        """Reset the file change tracking for a new round."""
+        self.files_changed_this_round.clear()
 
 def save_prompt_to_file(messages: List[Dict[str, str]], round_time: str = None, step: str = "planning"):
     """Save prompt messages to a file for debugging."""
@@ -169,6 +182,9 @@ class PlannerAgent:
         """Plan next steps based on current state and user input."""
         logger.info("=== Starting Planner planning ===")
         
+        # Reset file change tracking for this round
+        context.reset_file_changes()
+        
         messages = self._build_prompt(context)
         
         # Save prompt if debug mode is enabled
@@ -215,10 +231,10 @@ class PlannerAgent:
                 thinking_time = time.time() - start_time
                 usage = chat_completion.get_token_usage()
                 
-                # Log usage statistics
+                # Log usage statistics for this step only (don't update global tracker here)
                 log_usage(usage, thinking_time, "Step", self.model)
                 
-                # Update the context's total usage
+                # Store the current step's usage in context (without updating global tracker)
                 if not context.total_usage:
                     context.total_usage = TokenUsage(
                         prompt_tokens=usage['prompt_tokens'],
@@ -229,8 +245,13 @@ class PlannerAgent:
                         cached_prompt_tokens=usage.get('cached_prompt_tokens', 0)
                     )
                 else:
-                    # Just use the current round's usage directly from chat_completion
-                    context.total_usage = chat_completion.token_tracker.get_total_usage()
+                    # Add this step's usage to context's running total
+                    context.total_usage.prompt_tokens += usage['prompt_tokens']
+                    context.total_usage.completion_tokens += usage['completion_tokens']
+                    context.total_usage.total_tokens += usage['total_tokens']
+                    context.total_usage.total_cost += usage['total_cost']
+                    context.total_usage.thinking_time += thinking_time
+                    context.total_usage.cached_prompt_tokens += usage.get('cached_prompt_tokens', 0)
                 
                 message = response.choices[0].message
                 logger.debug(f"Received response type: {'content' if message.content else 'function call'}")
@@ -254,6 +275,19 @@ class PlannerAgent:
                     content = message.content.strip()
                     if "TASK_COMPLETE" in content:
                         return "TASK_COMPLETE"
+                    elif content == "INVOKE_EXECUTOR":
+                        # Check if scratchpad.md was updated in this round before allowing executor invocation
+                        if 'scratchpad.md' not in context.files_changed_this_round:
+                            warning = ("Warning: You are trying to invoke the executor without updating scratchpad.md. "
+                                     "The executor will receive the same instructions as last time. "
+                                     "Please update scratchpad.md with detailed instructions for the executor first.")
+                            logger.warning(warning)
+                            messages.append({
+                                "role": "user",
+                                "content": warning
+                            })
+                            continue  # Retry with the warning message
+                        return content
                     else:
                         warning = "Warning: Do not communicate with executor directly in the output. Please use create_file tool to update scratchpad.md instead."
                         logger.error(f'Unexpected content output: {content}\n{warning}')
@@ -273,9 +307,10 @@ class PlannerAgent:
                 filename = arguments.get("filename")
                 content = arguments.get("content")
                 
-                # Update the file
+                # Update the file and track the change
                 from tools import create_file
                 create_file(filename=filename, content=content)
+                context.track_file_change(filename)
                 
                 return f"Successfully updated {filename} with new content"
             
