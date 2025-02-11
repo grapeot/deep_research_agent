@@ -292,6 +292,13 @@ class ResearchSession:
                 
                 logger.info(f"Planner next steps:\n{next_steps}")
                 
+                # Update global token tracker with planner's usage
+                if planner_context.total_usage:
+                    logger.debug("Updating global token tracker with planner usage")
+                    self.token_tracker.update_from_token_usage(planner_context.total_usage)
+                    # Clear the context usage to avoid double counting
+                    planner_context.total_usage = None
+                
                 # Check if planner indicates task completion
                 if next_steps.strip().startswith("TASK_COMPLETE"):
                     logger.info("Planner indicates task is complete")
@@ -326,10 +333,6 @@ class ResearchSession:
                 # If not complete, proceed with execution
                 logger.info("=== Control Flow: Transferring control to Executor ===")
                 
-                # Update total usage from planner
-                if planner_context.total_usage:
-                    self.token_tracker.update_from_token_usage(planner_context.total_usage)
-                
                 # Create executor context
                 executor_context = ExecutorContext(
                     created_files=self.created_files,
@@ -351,9 +354,12 @@ class ResearchSession:
                     
                 logger.info(f"Executor result:\n{result}")
                 
-                # Update total usage from executor
+                # Update global token tracker with executor's usage
                 if executor_context.total_usage:
+                    logger.debug("Updating global token tracker with executor usage")
                     self.token_tracker.update_from_token_usage(executor_context.total_usage)
+                    # Clear the context usage to avoid double counting
+                    executor_context.total_usage = None
                 
                 # Handle user input requests
                 if result.strip().startswith("WAIT_USER_CONFIRMATION"):
