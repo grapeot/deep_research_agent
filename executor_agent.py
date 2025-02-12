@@ -186,7 +186,8 @@ class ExecutorAgent:
                 
                 # Add reasoning_effort for models starting with 'o'
                 if self.model.startswith('o'):
-                    chat_completion_args["reasoning_effort"] = 'high'
+                    # Bias towards low reasoning effort for bias towards action
+                    chat_completion_args["reasoning_effort"] = 'low'
                 
                 response = chat_completion.chat_completion(**chat_completion_args)
                 

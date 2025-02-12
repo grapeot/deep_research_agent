@@ -119,8 +119,10 @@ def search_with_retry(query: str, max_results: int = 10, max_retries: int = 3) -
         except Exception as e:
             logger.error(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
             if attempt < max_retries - 1:  # If not the last attempt
-                logger.info("Waiting 1 second before retry...")
-                time.sleep(1)  # Wait 1 second before retry
+                # Exponential backoff: wait longer for each retry
+                wait_time = 10 * (attempt + 1)  # 10s, 20s, 30s...
+                logger.info(f"Rate limit hit. Waiting {wait_time} seconds before retry...")
+                time.sleep(wait_time)
             else:
                 logger.error(f"All {max_retries} attempts failed")
                 raise

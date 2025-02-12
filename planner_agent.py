@@ -184,6 +184,7 @@ class PlannerAgent:
         
         # Reset file change tracking for this round
         context.reset_file_changes()
+        logger.info("Reset file change tracking for new round")
         
         messages = self._build_prompt(context)
         
@@ -192,7 +193,7 @@ class PlannerAgent:
             save_prompt_to_file(messages)
         
         try:
-            while True:  # Add loop for retries
+            while True:  # Loop to handle chained function calls
                 # Start timer
                 start_time = time.time()
                 
@@ -270,13 +271,15 @@ class PlannerAgent:
                                      'arguments': json.loads(message.function_call.arguments)}]
                     save_response_to_file(message.content or "", tool_calls)
 
-                # Check for tool calls (new format) or function call (old format)
+                # Check for content responses first
                 if message.content:
                     content = message.content.strip()
-                    if "TASK_COMPLETE" in content:
+                    # Only allow exact matches for control flow commands
+                    if content == "TASK_COMPLETE":
                         return "TASK_COMPLETE"
                     elif content == "INVOKE_EXECUTOR":
                         # Check if scratchpad.md was updated in this round before allowing executor invocation
+                        logger.info(f"Files changed this round before invoking executor: {context.files_changed_this_round}")
                         if 'scratchpad.md' not in context.files_changed_this_round:
                             warning = ("Warning: You are trying to invoke the executor without updating scratchpad.md. "
                                      "The executor will receive the same instructions as last time. "
@@ -289,7 +292,7 @@ class PlannerAgent:
                             continue  # Retry with the warning message
                         return content
                     else:
-                        warning = "Warning: Do not communicate with executor directly in the output. Please use create_file tool to update scratchpad.md instead."
+                        warning = "Warning: Planner should not output content directly. Please use create_file tool to write any output to files."
                         logger.error(f'Unexpected content output: {content}\n{warning}')
                         messages.append({
                             "role": "user",
@@ -297,12 +300,12 @@ class PlannerAgent:
                         })
                         continue  # Retry with the warning message
 
-                # Handle the function call to update file
+                # Handle function calls
                 if not message.function_call:
                     logger.error("Model did not provide a function call or content")
                     return "Error: Failed to update progress tracking"
                 
-                # Parse the function call
+                # Parse and execute the function call
                 arguments = json.loads(message.function_call.arguments)
                 filename = arguments.get("filename")
                 content = arguments.get("content")
@@ -311,8 +314,24 @@ class PlannerAgent:
                 from tools import create_file
                 create_file(filename=filename, content=content)
                 context.track_file_change(filename)
+                logger.info(f"Tracked file change for: {filename}")
                 
-                return f"Successfully updated {filename} with new content"
+                # Add function call and result to conversation history
+                messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "function_call": {
+                        "name": "create_file",
+                        "arguments": json.dumps(arguments)
+                    }
+                })
+                messages.append({
+                    "role": "user",
+                    "content": f"Successfully created/updated file: {filename}"
+                })
+                
+                # Continue the loop to allow for more function calls
+                continue
             
         except Exception as e:
             logger.error(f"Error during planning: {e}", exc_info=True)
