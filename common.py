@@ -22,6 +22,7 @@ class TokenTracker:
     
     # Model pricing per 1M tokens
     MODEL_PRICING = {
+        # OpenAI models
         "o1": {
             "input": 15.0,
             "output": 60.0
@@ -33,6 +34,27 @@ class TokenTracker:
         "gpt-4o": {
             "input": 2.50,
             "output": 10.00
+        },
+        # Claude models
+        "claude-3-7-sonnet-20250219": {
+            "input": 3.00,
+            "output": 15.00
+        },
+        "claude-3-5-sonnet": {
+            "input": 1.50,
+            "output": 6.00
+        },
+        "claude-3-haiku": {
+            "input": 0.25,
+            "output": 1.25
+        },
+        "claude-3-opus": {
+            "input": 15.00,
+            "output": 75.00
+        },
+        "claude-3-sonnet": {
+            "input": 3.00,
+            "output": 15.00
         }
     }
     
@@ -42,9 +64,16 @@ class TokenTracker:
     @classmethod
     def calculate_cost(cls, prompt_tokens: int, completion_tokens: int, cached_tokens: int, model: str) -> float:
         """Calculate the cost of API usage based on model pricing."""
+        # Default to o3-mini pricing if model not found
         pricing = cls.MODEL_PRICING.get(model, cls.MODEL_PRICING["o3-mini"])
         
-        # Calculate regular input cost (excluding cached tokens)
+        # For Claude models, we don't have cached token discounts
+        if model.startswith("claude"):
+            regular_input_cost = (prompt_tokens / 1_000_000) * pricing["input"]
+            output_cost = (completion_tokens / 1_000_000) * pricing["output"]
+            return regular_input_cost + output_cost
+        
+        # For OpenAI models with cached token discounts
         regular_input_tokens = prompt_tokens - cached_tokens
         regular_input_cost = (regular_input_tokens / 1_000_000) * pricing["input"]
         

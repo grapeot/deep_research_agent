@@ -8,13 +8,15 @@ import os
 import json
 import time
 import sys
+import subprocess
 from datetime import datetime
-from typing import List, Set, Dict, Optional
+from typing import List, Set, Dict, Optional, Any, Union
 from dataclasses import dataclass
 
-import openai
+from anthropic import Anthropic
 
-from tools import chat_completion
+# Import tools module instead of individual functions that may not be directly exposed
+import tools
 from tool_definitions import function_definitions
 from common import TokenUsage, TokenTracker
 
@@ -67,7 +69,7 @@ def save_response_to_file(response: str, tool_calls: List[Dict] = None, round_ti
             for tool_call in tool_calls:
                 f.write(f"Tool: {tool_call.get('name', 'unknown')}\n")
                 f.write("Arguments:\n")
-                f.write(f"{json.dumps(tool_call.get('arguments', {}), indent=2, ensure_ascii=False)}\n")
+                f.write(f"{json.dumps(tool_call.get('input', {}), indent=2, ensure_ascii=False)}\n")
                 f.write("-" * 80 + "\n")
     logger.debug(f"Saved response to {filename}")
 
@@ -102,11 +104,26 @@ class ExecutorAgent:
         """Initialize the Executor agent.
         
         Args:
-            model: The OpenAI model to use
+            model: The model to use (only Claude 3.7 Sonnet is supported)
         """
-        self.model = model
+        # Always use Claude 3.7 Sonnet regardless of input
+        self.model = "claude-3-7-sonnet-20250219"
         self.system_prompt = self._load_system_prompt()
         
+        # Get API key from environment
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            logger.error("ANTHROPIC_API_KEY not found in environment. Please set it before using Claude.")
+            raise ValueError("ANTHROPIC_API_KEY environment variable is required but not set")
+        
+        # Initialize the Anthropic client
+        try:
+            self.client = Anthropic(api_key=api_key)
+            logger.info("Successfully initialized Anthropic client")
+        except Exception as e:
+            logger.error(f"Failed to initialize Anthropic client: {str(e)}")
+            raise
+
     def _load_system_prompt(self) -> str:
         """Load system prompt from .executorrules file."""
         today = datetime.now().strftime("%Y-%m-%d")
@@ -134,12 +151,12 @@ class ExecutorAgent:
                 file_contents[filename] = f"[Error reading file: {str(e)}]"
         return file_contents
 
-    def _build_prompt(self, context: ExecutorContext) -> List[Dict[str, str]]:
+    def _build_prompt(self, context: ExecutorContext) -> List[Dict[str, Any]]:
         """Build the complete prompt including context and files."""
         logger.debug("Building executor prompt")
-        messages = [
-            {"role": "user", "content": self.system_prompt},
-        ]
+        
+        # Build message for Claude's API
+        messages = []
         
         # Add file contents and task context
         file_contents = self._load_file_contents(context)
@@ -155,182 +172,120 @@ class ExecutorAgent:
         # Add available files list
         context_message += f"\nAvailable Files: {', '.join(context.created_files)}\n"
         
-        messages.append({"role": "user", "content": context_message})
+        # Create a user message with system instructions and context
+        messages.append({
+            "role": "user", 
+            "content": [
+                {"type": "text", "text": self.system_prompt},
+                {"type": "text", "text": context_message}
+            ]
+        })
+        
         return messages
 
-    def execute(self, context: ExecutorContext) -> str:
-        """Execute task based on instructions."""
-        logger.info("=== Starting Executor execution ===")
+    def _format_tools_for_claude(self, tools: List[Dict]) -> List[Dict]:
+        """Format OpenAI-style function tools for Claude's API."""
+        claude_tools = []
         
-        # Store the context
-        self.context = context
+        for tool in tools:
+            name = tool["name"]
+            description = tool.get("description", "")
+            parameters = tool.get("parameters", {})
+            
+            claude_tool = {
+                "name": name,
+                "description": description,
+                "input_schema": parameters
+            }
+            
+            claude_tools.append(claude_tool)
         
-        messages = self._build_prompt(context)
-        
-        # Save prompt if debug mode is enabled
-        if context.debug:
-            save_prompt_to_file(messages)
-        
-        try:
-            while True:  # Loop to handle chained tool calls
-                # Start timer
-                start_time = time.time()
-                
-                logger.debug("Calling chat completion")
-                chat_completion_args = {
-                    "messages": messages,
-                    "model": self.model,
-                    "functions": function_definitions,
-                    "function_call": "auto"
-                }
-                
-                # Add reasoning_effort for models starting with 'o'
-                if self.model.startswith('o'):
-                    # Bias towards low reasoning effort for bias towards action
-                    chat_completion_args["reasoning_effort"] = 'low'
-                
-                response = chat_completion.chat_completion(**chat_completion_args)
-                
-                # Calculate thinking time and token usage
-                thinking_time = time.time() - start_time
-                usage = chat_completion.get_token_usage()
-                
-                # Log usage statistics for this step only (don't update global tracker here)
-                log_usage(usage, thinking_time, "Step", self.model)
-                
-                # Store the current step's usage in context (without updating global tracker)
-                if not context.total_usage:
-                    context.total_usage = TokenUsage(
-                        prompt_tokens=usage['prompt_tokens'],
-                        completion_tokens=usage['completion_tokens'],
-                        total_tokens=usage['total_tokens'],
-                        total_cost=usage['total_cost'],
-                        thinking_time=thinking_time,
-                        cached_prompt_tokens=usage.get('cached_prompt_tokens', 0)
-                    )
-                else:
-                    # Add this step's usage to context's running total
-                    context.total_usage.prompt_tokens += usage['prompt_tokens']
-                    context.total_usage.completion_tokens += usage['completion_tokens']
-                    context.total_usage.total_tokens += usage['total_tokens']
-                    context.total_usage.total_cost += usage['total_cost']
-                    context.total_usage.thinking_time += thinking_time
-                    context.total_usage.cached_prompt_tokens += usage.get('cached_prompt_tokens', 0)
-                
-                message = response.choices[0].message
-                logger.debug(f"Received response type: {'content' if message.content else 'tool call'}")
-                
-                # Log the actual response content
-                if message.content:
-                    logger.info(f"Executor Response Content:\n{message.content}")
-                elif hasattr(message, 'tool_calls') and message.tool_calls:
-                    for tool_call in message.tool_calls:
-                        logger.info(f"Executor Tool Call:\nName: {tool_call.function.name}\nArguments: {tool_call.function.arguments}")
-                elif hasattr(message, 'function_call') and message.function_call:
-                    logger.info(f"Executor Function Call:\nName: {message.function_call.name}\nArguments: {message.function_call.arguments}")
-                
-                # Save response if debug mode is enabled
-                if context.debug:
-                    tool_calls = []
-                    if hasattr(message, 'tool_calls') and message.tool_calls:
-                        tool_calls = [{'name': tc.function.name, 'arguments': json.loads(tc.function.arguments)} 
-                                    for tc in message.tool_calls]
-                    elif hasattr(message, 'function_call') and message.function_call:
-                        tool_calls = [{'name': message.function_call.name, 
-                                     'arguments': json.loads(message.function_call.arguments)}]
-                    save_response_to_file(message.content or "", tool_calls)
+        return claude_tools
 
-                # Check for tool calls (new format) or function call (old format)
-                has_tool_call = False
-                if hasattr(message, 'tool_calls') and message.tool_calls:
-                    logger.info("Processing tool_calls (new format)")
-                    if len(message.tool_calls) > 1:
-                        raise ValueError(f"Multiple tool calls not supported. Received {len(message.tool_calls)} calls.")
-                    tool_call = message.tool_calls[0]  # For now, handle first tool call
-                    func_name = tool_call.function.name
-                    arguments = json.loads(tool_call.function.arguments)
-                    logger.info(f"Tool call detected - Function: {func_name}")
-                    logger.debug(f"Tool arguments: {json.dumps(arguments, ensure_ascii=False)}")
-                    has_tool_call = True
-                elif hasattr(message, 'function_call') and message.function_call:
-                    logger.info("Processing function_call (old format)")
-                    func_name = message.function_call.name
-                    arguments = json.loads(message.function_call.arguments)
-                    logger.info(f"Function call detected - Function: {func_name}")
-                    logger.debug(f"Function arguments: {json.dumps(arguments, ensure_ascii=False)}")
-                    has_tool_call = True
-                
-                if has_tool_call:
-                    # Execute the tool
-                    logger.info(f"Executing tool: {func_name}")
-                    start_time = time.time()
-                    tool_result = self._execute_tool(func_name, arguments)
-                    tool_execution_time = time.time() - start_time
-                    logger.info(f"Tool execution completed in {tool_execution_time:.2f}s")
-                    
-                    # Add tool result to conversation
-                    messages.append({
-                        "role": "assistant",
-                        "content": None,
-                        "function_call": {
-                            "name": func_name,
-                            "arguments": json.dumps(arguments, ensure_ascii=False)
-                        }
-                    })
-                    # Include function result in the next user message instead of using 'function' role
-                    result_preview = tool_result[:200] + "..." if tool_result and len(tool_result) > 200 else tool_result
-                    logger.debug(f"Tool result preview: {result_preview}")
-                    messages.append({
-                        "role": "user",
-                        "content": f"Function {func_name} returned: {tool_result}"
-                    })
-                    logger.info("Added tool result to conversation history")
-                    
-                    # Continue the loop to get model's interpretation of the result
-                    continue
-                else:
-                    # No more tool calls, return the final response
-                    logger.info("No tool calls detected, returning final response")
-                    return message.content or "Task completed successfully"
-            
-        except Exception as e:
-            logger.error(f"Error during execution: {e}", exc_info=True)
-            return f"Error during execution: {str(e)}"
-            
-    def _execute_tool(self, func_name: str, arguments: Dict) -> Optional[str]:
-        """Execute a tool with given name and arguments."""
+    def _extract_response_text(self, response):
+        """Extract text from Claude response."""
         try:
+            if hasattr(response, 'model_dump'):
+                response_dict = response.model_dump()
+                content = response_dict.get('content', [])
+                
+                # Look for text content
+                text_parts = []
+                for content_block in content:
+                    if content_block.get('type') == "text":
+                        text_parts.append(content_block.get('text', ''))
+                
+                if text_parts:
+                    return "\n".join(text_parts)
+        except Exception as e:
+            logger.error(f"Error extracting response text: {e}")
+        
+        return "No text in response"
+
+    def _get_tool_use(self, response):
+        """Extract tool use from Claude response."""
+        try:
+            if hasattr(response, 'model_dump'):
+                response_dict = response.model_dump()
+                
+                # Look for tool_use blocks in content
+                content = response_dict.get('content', [])
+                tool_calls = []
+                
+                for block in content:
+                    if block.get('type') == 'tool_use':
+                        # Create a tool call object with the expected format
+                        tool_call = {
+                            'id': block.get('id'),
+                            'name': block.get('name'),
+                            'input': block.get('input', {})
+                        }
+                        tool_calls.append(tool_call)
+                
+                if tool_calls:
+                    logger.debug(f"Found {len(tool_calls)} tool calls in response")
+                    return tool_calls
+                
+                # If stop_reason is tool_use but we didn't find tool calls in content,
+                # something unexpected happened
+                if response_dict.get('stop_reason') == 'tool_use':
+                    logger.warning("Response has stop_reason='tool_use' but no tool calls were extracted")
+        except Exception as e:
+            logger.error(f"Error extracting tool calls: {e}")
+        
+        return []
+
+    def _process_tool_calls(self, tool_calls, context):
+        """Process function calls and return results for each call."""
+        tool_results = []
+        
+        for tool_call in tool_calls:
+            tool_name = tool_call.get("name", "")
+            tool_input = tool_call.get("input", {})
+            tool_id = tool_call.get("id")
+            
+            logger.info(f"Processing tool call: {tool_name} with input: {tool_input}")
+            
             result = None
-            if func_name == "create_file":
-                from tools import create_file
-                filename = arguments.get('filename')
-                logger.info(f"Creating file: {filename}")
-                result = create_file(**arguments)
+            if tool_name == "perform_search":
+                query = tool_input.get("query", "")
+                max_results = tool_input.get("max_results", 10)
+                max_retries = tool_input.get("max_retries", 3)
+                result = tools.perform_search(query=query, max_results=max_results, max_retries=max_retries)
+            elif tool_name == "fetch_web_content":
+                urls = tool_input.get("urls", [])
+                max_concurrent = tool_input.get("max_concurrent", 3)
+                result = tools.fetch_web_content(urls=urls, max_concurrent=max_concurrent)
+            elif tool_name == "create_file":
+                filename = tool_input.get("filename", "")
+                content = tool_input.get("content", "")
+                result = tools.create_file(filename=filename, content=content)
                 # Add the created file to the set
                 if filename:
-                    self.context.created_files.add(filename)
-                logger.info("File creation completed")
-            elif func_name == "perform_search":
-                from tools import perform_search
-                query = arguments.get('query', '')
-                logger.info(f"Starting search with query: {query}")
-                result = perform_search(**arguments)
-                result_lines = len(result.split('\n'))
-                result_chars = len(result)
-                logger.info(f"Search completed. Response size: {result_chars} chars, {result_lines} lines")
-                logger.debug(f"First 200 chars of response: {result[:200]}...")
-            elif func_name == "fetch_web_content":
-                from tools import fetch_web_content
-                urls = arguments.get('urls', [])
-                logger.info(f"Starting content fetch from {len(urls)} URLs")
-                for i, url in enumerate(urls, 1):
-                    logger.info(f"Fetching URL {i}/{len(urls)}: {url}")
-                result = fetch_web_content(**arguments)
-                result_size = len(result)
-                logger.info(f"Content fetch completed. Total response size: {result_size} chars")
-            elif func_name == "execute_command":
-                command = arguments.get("command")
-                explanation = arguments.get("explanation")
+                    context.created_files.add(filename)
+            elif tool_name == "execute_command":
+                command = tool_input.get("command", "")
+                explanation = tool_input.get("explanation", "")
                 
                 if not command:
                     result = "Error: No command provided"
@@ -349,7 +304,6 @@ class ExecutorAgent:
                         logger.info("Command execution cancelled by user")
                     else:
                         # Execute command
-                        import subprocess
                         try:
                             logger.info("Starting command execution...")
                             cmd_result = subprocess.run(
@@ -372,18 +326,175 @@ class ExecutorAgent:
                             logger.error(error_msg)
                             result = error_msg
             else:
-                error_msg = f"Unknown function: {func_name}"
+                error_msg = f"Unknown function: {tool_name}"
                 logger.error(error_msg)
                 result = error_msg
             
-            # Log the result size for all tools
-            if result:
-                result_size = len(result)
-                logger.info(f"Tool {func_name} completed with result size: {result_size} chars")
+            # Convert result to string if it's not already a string
+            if not isinstance(result, str):
+                result = json.dumps(result)
             
-            return result
+            # Log the length of the result instead of its type
+            logger.info(f"Tool call result length: {len(result)} characters")
+            logger.debug(f"Tool call result: {result[:200]}..." if len(result) > 200 else result)
+            
+            tool_results.append({
+                "tool_use_id": tool_id,
+                "content": result
+            })
+        
+        return tool_results
+
+    def execute(self, context: ExecutorContext) -> str:
+        """Execute task based on instructions."""
+        logger.info("=== Starting Executor execution ===")
+        
+        # Store the context
+        self.context = context
+        
+        messages = self._build_prompt(context)
+        
+        # Save prompt if debug mode is enabled
+        if context.debug:
+            save_prompt_to_file(messages)
+        
+        try:
+            iteration = 0
+            max_iterations = 12  # Prevent infinite loops
+            
+            while iteration < max_iterations:
+                # Start timer
+                start_time = time.time()
+                
+                logger.debug("Calling Claude chat completion")
+                
+                # Format tools for Claude
+                claude_tools = self._format_tools_for_claude(function_definitions)
+                
+                # Prepare API call parameters
+                params = {
+                    "model": self.model,
+                    "messages": messages,
+                    "max_tokens": 4000,
+                    "tools": claude_tools,
+                    "thinking": {
+                        "type": "enabled",
+                        "budget_tokens": 2000
+                    }
+                }
+                
+                # Make the API call
+                try:
+                    response = self.client.beta.messages.create(**params)
+                except Exception as e:
+                    logger.error(f"API call error: {str(e)}")
+                    return f"Error during API call: {str(e)}"
+                
+                # Calculate thinking time and token usage
+                thinking_time = time.time() - start_time
+                
+                # Extract token usage
+                completion_tokens = response.usage.output_tokens
+                prompt_tokens = response.usage.input_tokens
+                total_tokens = prompt_tokens + completion_tokens
+                
+                # Calculate cost
+                cost = TokenTracker.calculate_cost(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cached_tokens=0,  # Claude doesn't have cached tokens
+                    model=self.model
+                )
+                
+                # Create usage dictionary
+                usage = {
+                    'prompt_tokens': prompt_tokens,
+                    'completion_tokens': completion_tokens,
+                    'total_tokens': total_tokens,
+                    'total_cost': cost,
+                    'cached_prompt_tokens': 0  # Claude doesn't have cached tokens
+                }
+                
+                # Log usage statistics for this step only
+                log_usage(usage, thinking_time, "Step", self.model)
+                
+                # Store the current step's usage in context
+                if not context.total_usage:
+                    context.total_usage = TokenUsage(
+                        prompt_tokens=usage['prompt_tokens'],
+                        completion_tokens=usage['completion_tokens'],
+                        total_tokens=usage['total_tokens'],
+                        total_cost=usage['total_cost'],
+                        thinking_time=thinking_time,
+                        cached_prompt_tokens=0
+                    )
+                else:
+                    # Add this step's usage to context's running total
+                    context.total_usage.prompt_tokens += usage['prompt_tokens']
+                    context.total_usage.completion_tokens += usage['completion_tokens']
+                    context.total_usage.total_tokens += usage['total_tokens']
+                    context.total_usage.total_cost += usage['total_cost']
+                    context.total_usage.thinking_time += thinking_time
+                
+                # Extract text from response
+                text_response = self._extract_response_text(response)
+                logger.info(f"Claude Response Content:\n{text_response}")
+                
+                # Get the complete response content to preserve tool_use blocks
+                response_dict = response.model_dump()
+                response_content = response_dict.get('content', [])
+                
+                # Extract tool calls from response
+                tool_calls = self._get_tool_use(response)
+                
+                # Save response if debug mode is enabled
+                if context.debug:
+                    save_response_to_file(text_response, tool_calls)
+                
+                # Add Claude's complete response to conversation
+                messages.append({
+                    "role": "assistant",
+                    "content": response_content
+                })
+                
+                # Check if there are tool calls
+                if tool_calls:
+                    logger.info(f"Claude wants to use {len(tool_calls)} tools")
+                    
+                    # Process tool calls
+                    tool_results = self._process_tool_calls(tool_calls, self.context)
+                    
+                    # Format tool results as content blocks in a user message
+                    tool_result_blocks = []
+                    for result in tool_results:
+                        tool_result_blocks.append({
+                            "type": "tool_result",
+                            "tool_use_id": result["tool_use_id"],
+                            "content": result["content"]
+                        })
+                    
+                    # Add a user message with tool result content blocks
+                    messages.append({
+                        "role": "user", 
+                        "content": tool_result_blocks
+                    })
+                    
+                    # Continue to next iteration
+                    iteration += 1
+                    continue
+                else:
+                    # No more tool calls, return the final response
+                    logger.info("No tool calls detected, returning final response")
+                    
+                    # Check for special markers in the response
+                    if text_response.strip().startswith("WAIT_USER_CONFIRMATION"):
+                        return text_response
+                    
+                    return text_response or "Task completed successfully"
+            
+            # If we've reached max iterations without resolution
+            return "Exceeded maximum number of tool call iterations without completing the task."
             
         except Exception as e:
-            error_msg = f"Error executing tool {func_name}: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            return error_msg 
+            logger.error(f"Error during execution: {e}", exc_info=True)
+            return f"Error during execution: {str(e)}" 

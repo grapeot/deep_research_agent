@@ -7,3 +7,4 @@ html5lib>=1.1
 duckduckgo_search>=3.0.0
 beautifulsoup4>=4.9.0
 requests>=2.25.0
+anthropic

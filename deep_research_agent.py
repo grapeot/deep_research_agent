@@ -34,7 +34,7 @@ def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Deep Research Agent')
     parser.add_argument('query', help='The research query to process')
-    parser.add_argument('--model', default='gpt-4o', help='The OpenAI model to use')
+    parser.add_argument('--model', default='gpt-4o', help='The OpenAI model to use for the planner (default: gpt-4o)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
     return parser.parse_args()
 
@@ -138,16 +138,15 @@ class AgentCommunication:
 class ResearchSession:
     """Manages the research session with Planner and Executor agents."""
     
-    def __init__(self, planner_model: str, executor_model: str, debug: bool = False):
+    def __init__(self, planner_model: str, executor_model: str = None, debug: bool = False):
         """Initialize the research session.
         
         Args:
             planner_model: The OpenAI model to use for Planner agent
-            executor_model: The OpenAI model to use for Executor agent
+            executor_model: Not used, as executor always uses Claude 3.7
             debug: Whether to enable debug mode
         """
         self.planner_model = planner_model
-        self.executor_model = executor_model
         self.debug = debug
         
         # Set up debug logging if enabled
@@ -157,8 +156,12 @@ class ResearchSession:
             logging.getLogger('planner_agent').setLevel(logging.DEBUG)
             logger.debug("Debug logging enabled")
         
+        # Initialize Planner with OpenAI model
         self.planner = PlannerAgent(model=planner_model)
-        self.executor = ExecutorAgent(model=executor_model)
+        
+        # Initialize Executor with Claude 3.7 (executor_model param is ignored)
+        self.executor = ExecutorAgent(model="claude-3-7-sonnet-20250219")
+        
         self.created_files: Set[str] = set()
         self.token_tracker = TokenTracker()
         self.agent_communication = AgentCommunication()
@@ -426,13 +429,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--planner-model",
-        default="gpt-4o",
-        help="OpenAI model to use for Planner agent (default: gpt-4o)"
-    )
-    parser.add_argument(
-        "--executor-model",
-        default="gpt-4o",
-        help="OpenAI model to use for Executor agent (default: gpt-4o)"
+        default="o1",
+        help="OpenAI model to use for Planner agent (default: o1)"
     )
     parser.add_argument(
         "--debug",
@@ -443,9 +441,9 @@ def main() -> None:
     args = parser.parse_args()
     
     # Start research session
+    logger.info(f"Starting research session with Planner model: {args.planner_model} and Executor: Claude 3.7")
     session = ResearchSession(
         planner_model=args.planner_model,
-        executor_model=args.executor_model,
         debug=args.debug
     )
     session.chat_loop(args.query)

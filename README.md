@@ -20,6 +20,10 @@ pip install -r requirements.txt
 # Install Playwright browsers
 playwright install chromium
 
+# Set API keys
+export OPENAI_API_KEY=your_openai_api_key
+export ANTHROPIC_API_KEY=your_anthropic_api_key
+
 # Run a research query
 python3 deep_research_agent.py "your research query"
 ```
